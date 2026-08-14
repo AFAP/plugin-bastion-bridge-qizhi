@@ -108,6 +108,9 @@ if (-not $WhatIf) {
     if (Test-Path $SkillTarget) { Remove-Item $SkillTarget -Recurse -Force }
     New-Item -ItemType Directory -Force -Path (Split-Path $SkillTarget -Parent) | Out-Null
     Copy-Item -Path $BundleSource -Destination $SkillTarget -Recurse
+    # 清理本地开发时产生的 Python 缓存，保证安装目录始终干净
+    Get-ChildItem $SkillTarget -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Write-Ok "技能文件："
     Get-ChildItem $SkillTarget -Recurse -File | ForEach-Object { Write-Host "      $($_.FullName)" }
 } else {
