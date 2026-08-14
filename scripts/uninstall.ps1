@@ -1,24 +1,23 @@
-﻿<#
-.SYNOPSIS
-  卸载「齐治堡垒机桥接器」DSH 技能插件（可选：还原齐治客户端的原 putty.exe）。
+﻿# 卸载「齐治堡垒机桥接器」DSH 技能插件（可选：还原齐治客户端的原 putty.exe）。
+#
+# 示例：
+#   powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 -RestoreBridge
+#
+# 参数：RestoreBridge（从最新的 putty.exe.bak.* 还原官方客户端，需管理员权限时自动提权）、
+#      QizhiDir（齐治客户端目录）、WhatIf（预演）。
+# 参数通过 $args 手工解析：兼容 irm|iex 与 -File 两种调用方式。
+$RestoreBridge = $false
+$QizhiDir = "C:\Program Files (x86)\QizhiTech\AccessClient"
+$WhatIf = $false
 
-.EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
-  powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 -RestoreBridge
-
-.PARAMETER RestoreBridge
-  将齐治客户端目录中最新的 putty.exe.bak.* 还原为 putty.exe（需管理员权限时自动提权）。
-.PARAMETER QizhiDir
-  齐治客户端安装目录，默认 C:\Program Files (x86)\QizhiTech\AccessClient。
-.PARAMETER WhatIf
-  只打印将要执行的操作。
-#>
-[CmdletBinding()]
-param(
-    [switch]$RestoreBridge,
-    [string]$QizhiDir = "C:\Program Files (x86)\QizhiTech\AccessClient",
-    [switch]$WhatIf
-)
+for ($i = 0; $i -lt $args.Count; $i++) {
+    switch -Regex ($args[$i]) {
+        '^(-|/)RestoreBridge$' { $RestoreBridge = $true }
+        '^(-|/)QizhiDir$'      { $i++; if ($i -lt $args.Count) { $QizhiDir = $args[$i] } }
+        '^(-|/)WhatIf$'        { $WhatIf = $true }
+    }
+}
 
 $ErrorActionPreference = "Stop"
 

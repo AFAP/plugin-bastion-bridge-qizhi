@@ -1,51 +1,43 @@
-﻿<#
-.SYNOPSIS
-  一键安装「齐治堡垒机桥接器」DeepSeek Harness 技能插件（可选：同时部署桥接器 putty.exe）。
+﻿# 一键安装「齐治堡垒机桥接器」DeepSeek Harness 技能插件（可选：同时部署桥接器 putty.exe）。
+#
+# 1. 把仓库中的技能包 skill/qizhi-bastion 安装到 %USERPROFILE%\.dsh\skills\qizhi-bastion
+#    （若设置了 DSH_HOME 环境变量则使用 DSH_HOME）。DeepSeek Harness 实时监听该目录，
+#    安装后无需重启即可在会话中使用 /qizhi-bastion 或让 AI 自动调用。
+# 2. 使用 -InstallBridge 时，从 GitHub Release 下载 putty.exe，备份并替换齐治客户端
+#    目录中的原 putty.exe（需要管理员权限时自动弹出 UAC 提权）。
+#
+# 示例：
+#   从 GitHub 一行安装：
+#     powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/AFAP/plugin-bastion-bridge-qizhi/main/scripts/install.ps1 | iex"
+#   本地克隆目录内安装（离线）：
+#     powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+#   同时部署桥接器 EXE：
+#     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallBridge
+#
+# 参数：Owner（GitHub 用户名/组织名）、Repo（仓库名）、Ref（分支）、
+#      InstallBridge（部署 EXE）、BridgeTag（Release 标签）、
+#      QizhiDir（齐治客户端目录）、WhatIf（预演）。
+# 参数通过 $args 手工解析：兼容 irm|iex 一行安装 与 -File 两种调用方式
+# （iex 执行字符串时不允许 param() 块，故不用正式参数声明）。
+$Owner = ""
+$Repo = "plugin-bastion-bridge-qizhi"
+$Ref = "main"
+$InstallBridge = $false
+$BridgeTag = "latest"
+$QizhiDir = "C:\Program Files (x86)\QizhiTech\AccessClient"
+$WhatIf = $false
 
-.DESCRIPTION
-  1. 把仓库中的技能包 skill/qizhi-bastion 安装到 %USERPROFILE%\.dsh\skills\qizhi-bastion
-     （若设置了 DSH_HOME 环境变量则使用 DSH_HOME）。DeepSeek Harness 实时监听该目录，
-     安装后无需重启即可在会话中使用 /qizhi-bastion 或让 AI 自动调用。
-  2. 使用 -InstallBridge 时，从 GitHub Release 下载 putty.exe，备份并替换齐治客户端
-     目录中的原 putty.exe（需要管理员权限时自动弹出 UAC 提权）。
-
-.EXAMPLE
-  # 从 GitHub 一行安装（发布前把下方 $DefaultOwner 改成你的 GitHub 用户名后即可零参数运行）
-  powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/AFAP/plugin-bastion-bridge-qizhi/main/scripts/install.ps1 | iex"
-
-.EXAMPLE
-  # 本地克隆目录内安装（离线）
-  powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-
-.EXAMPLE
-  # 同时部署桥接器 EXE
-  powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallBridge
-
-.PARAMETER Owner
-  GitHub 用户名/组织名。发布后请修改本脚本顶部的 $DefaultOwner 即可省略。
-.PARAMETER Repo
-  仓库名，默认 plugin-bastion-bridge-qizhi。
-.PARAMETER Ref
-  分支/标签，默认 main。
-.PARAMETER InstallBridge
-  同时下载并部署桥接器 putty.exe 到齐治客户端目录。
-.PARAMETER BridgeTag
-  Release 标签，默认 latest（最新 Release）。
-.PARAMETER QizhiDir
-  齐治客户端安装目录，默认 C:\Program Files (x86)\QizhiTech\AccessClient。
-.PARAMETER WhatIf
-  只打印将要执行的操作，不做实际修改。
-#>
-[CmdletBinding()]
-param(
-    [string]$Owner = "",
-    [string]$Repo = "plugin-bastion-bridge-qizhi",
-    [string]$Ref = "main",
-    [switch]$InstallBridge,
-    [string]$BridgeTag = "latest",
-    [string]$QizhiDir = "C:\Program Files (x86)\QizhiTech\AccessClient",
-    [switch]$WhatIf
-)
+for ($i = 0; $i -lt $args.Count; $i++) {
+    switch -Regex ($args[$i]) {
+        '^(-|/)InstallBridge$' { $InstallBridge = $true }
+        '^(-|/)Owner$'         { $i++; if ($i -lt $args.Count) { $Owner = $args[$i] } }
+        '^(-|/)Repo$'          { $i++; if ($i -lt $args.Count) { $Repo = $args[$i] } }
+        '^(-|/)Ref$'           { $i++; if ($i -lt $args.Count) { $Ref = $args[$i] } }
+        '^(-|/)BridgeTag$'     { $i++; if ($i -lt $args.Count) { $BridgeTag = $args[$i] } }
+        '^(-|/)QizhiDir$'      { $i++; if ($i -lt $args.Count) { $QizhiDir = $args[$i] } }
+        '^(-|/)WhatIf$'        { $WhatIf = $true }
+    }
+}
 
 # >>> 默认发布账号（已设置）。换账号/组织时改这里即可，一行命令保持零参数。 <<<
 $DefaultOwner = "AFAP"
