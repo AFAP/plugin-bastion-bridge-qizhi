@@ -1,3 +1,10 @@
+# 密钥与环境（防误提交，红线）
+.env
+.env.*
+*.pem
+*.key
+.credentials.yaml
+
 # Python
 __pycache__/
 *.py[cod]
@@ -17,6 +24,7 @@ dist/
 build.log
 rebuild.log
 *.log
+*.spec.bak
 
 # IDE
 .vscode/
