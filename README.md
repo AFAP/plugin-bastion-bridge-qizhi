@@ -1,5 +1,9 @@
 # 齐治堡垒机 SSH 桥接器 · Qizhi Bastion SSH Bridge
 
+<div align="center">
+  <b>中文</b> · <a href="README.en.md">English</a>
+</div>
+
 > **让 AI 通过 RESTful API 接管齐治堡垒机里的服务器。**
 > 把「只能在专用 exe 客户端里点来点去」的运维操作，变成任何程序都能调用的本地接口。
 
@@ -41,8 +45,8 @@
 ```
 
 > 💡 **API 是唯一的接入契约**：桥接器不绑定任何特定 AI。无论 AI 跑在哪个框架里，
-> 只要它能调用 `POST /execute`、`GET /stream`、`POST /input`（完整说明见第 6 节与
-> [docs/使用说明.md](docs/使用说明.md)），就能立刻运维目标服务器。
+> 只要它能调用 `POST /execute`、`GET /stream`、`POST /input`（完整说明见第 7 节与
+> [docs/通用桥接器使用说明.md](docs/通用桥接器使用说明.md)），就能立刻运维目标服务器。
 > DeepSeek Harness 技能插件只是把这份 API 说明书「翻译」成了该平台的技能格式。
 
 ## 2. 功能特性
@@ -57,7 +61,17 @@
 - ✅ **安全默认**：仅监听 `127.0.0.1`、日志全量脱敏、不持久化任何凭证
 - ✅ **DeepSeek Harness 技能插件**：一键安装后 AI 自动获得「运维服务器」能力
 
-## 3. 目录结构
+## 3. 效果预览
+
+| 场景 | 截图 |
+|---|---|
+| 在 DeepSeek Harness 对话中直接派运维任务，AI 自动唤起技能并执行 | <img src="screenshot/DeepSeek%20Harness中使用方式.png" alt="DeepSeek Harness 中使用方式" width="480"> |
+| AI 通过桥接器 API 在目标服务器执行命令、拿到结构化结果 | <img src="screenshot/DeepSeek%20Harness中使用效果.png" alt="DeepSeek Harness 中使用效果" width="480"> |
+| 用 Postman 调试本地 REST API（`/health`、`/execute`） | <img src="screenshot/Postman调用示意.jpg" alt="Postman 调用示意" width="480"> |
+
+> 说明：示例中的 `8766` 为默认端口，实际端口以桥接器启动时写出的 `active_port.txt` 为准。
+
+## 4. 目录结构
 
 ```text
 plugin-bastion-bridge-qizhi/
@@ -70,23 +84,22 @@ plugin-bastion-bridge-qizhi/
 ├── logger.py                # 滚动日志 + 脱敏
 ├── requirements.txt         # 运行/构建依赖（已锁定版本，CI 可复现）
 ├── putty.spec               # PyInstaller 打包配置
-├── build.bat                # 本地一键构建
-├── skill/qizhi-bastion/       # DeepSeek Harness 技能插件（安装后位于用户目录 ~\.dsh\skills\qizhi-bastion）
-│   ├── SKILL.md                 #   技能指令（AI 的操作手册）
-│   ├── scripts/bridge.py        #   AI 可调用的命令行客户端（纯标准库）
-│   └── references/              #   API 参考 + 排错手册
+├── skill/qizhi-bastion/     # DeepSeek Harness 技能插件（安装后位于用户目录 ~\.dsh\skills\qizhi-bastion）
+│   ├── SKILL.md             #   技能指令（AI 的操作手册）
+│   ├── scripts/bridge.py    #   AI 可调用的命令行客户端（纯标准库）
+│   └── references/          #   API 参考 + 排错手册
 ├── scripts/
 │   ├── install.ps1          # 一键安装（技能插件 + 可选桥接器 EXE）
 │   └── uninstall.ps1        # 一键卸载/还原
 ├── docs/
-│   ├── 需求说明.md           # 通用堡垒机桥接器开发规范（FR/NFR 全列表）
-│   └── 使用说明.md           # 面向使用者/AI 的接口使用说明
+│   └── 通用桥接器使用说明.md   # 面向使用者/AI 的通用桥接器接口使用说明
+├── screenshot/              # 效果截图（README「效果预览」用）
 └── .github/workflows/release.yml  # 打 tag 自动构建 putty.exe 并发布 Release
 ```
 
-## 4. 快速开始
+## 5. 快速开始
 
-### 4.1 一行命令安装 DeepSeek Harness 技能插件（推荐）
+### 5.1 一行命令安装 DeepSeek Harness 技能插件（推荐）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/AFAP/plugin-bastion-bridge-qizhi/main/scripts/install.ps1 | iex"
@@ -98,7 +111,7 @@ DeepSeek Harness 实时监听该目录，**安装后无需重启**：
 - 在 DSH 对话中直接输入 `/qizhi-bastion` 唤起技能；
 - 或直接给 AI 派任务（"帮我看看 10.2.1.5 的磁盘使用率"），AI 会自动调用该技能。
 
-### 4.2 同时部署桥接器 EXE（从 Release 下载）
+### 5.2 同时部署桥接器 EXE（从 Release 下载）
 
 ```powershell
 # 本地克隆仓库后运行（可离线安装技能）
@@ -108,16 +121,18 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -InstallBridge
 脚本会：从最新 Release 下载 `putty.exe` → 备份原文件 → 替换到
 `C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe`（需要管理员权限时自动弹出 UAC）。
 
-### 4.3 源码构建（开发者）
+### 5.3 源码构建（开发者）
 
-```bat
-cd plugin-bastion-bridge-qizhi
-build.bat
-```
+仓库不携带本地构建脚本与产物，编译由 GitHub Actions 自动完成：
 
-构建产物：`dist\putty.exe`，部署方式见下一节。
+- 打 tag（如 `v1.1.0`）→ Actions 在 Windows 环境按锁定的 `requirements.txt` 用 PyInstaller 构建
+  `dist\putty.exe` 并自动发布 Release（含 SHA-256 校验和）；
+- 无 tag 时也可在 Actions 页面点 `Run workflow` 手动构建验证。
 
-## 5. 部署（替换 putty.exe）
+本地想跑一遍：`python -m pip install -r requirements.txt` 后执行
+`python -m PyInstaller putty.spec --clean --noconfirm`，产物在 `dist\putty.exe`。
+
+## 6. 部署（替换 putty.exe）
 
 拿到 `putty.exe`（Release 下载或本地构建）后，用它**覆盖**齐治客户端目录中的原文件：
 
@@ -125,7 +140,7 @@ build.bat
 C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe
 ```
 
-### 5.1 ① 备份原文件（务必先做）
+### 6.1 ① 备份原文件（务必先做）
 
 ```powershell
 Copy-Item "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe" "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe.bak" -Force
@@ -133,18 +148,18 @@ Copy-Item "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe" "C:\Program 
 
 > 使用 `scripts\install.ps1 -InstallBridge` 时会自动备份为 `putty.exe.bak.<时间戳>`，无需手动执行本步。
 
-### 5.2 ② 覆盖部署
+### 6.2 ② 覆盖部署
 
 ```powershell
 Copy-Item ".\dist\putty.exe" "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe" -Force
 ```
 
-### 5.3 ③ 验证
+### 6.3 ③ 验证
 
 在齐治控制台点击 SSH 资源 → 桥接器自动建立连接并启动 API；
 查看实际端口：`%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\active_port.txt`。
 
-### 5.4 想还原官方 putty.exe？
+### 6.4 想还原官方 putty.exe？
 
 ```powershell
 Copy-Item "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe.bak" "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe" -Force
@@ -152,7 +167,7 @@ Copy-Item "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe.bak" "C:\Prog
 
 或运行 `scripts\uninstall.ps1 -RestoreBridge`（自动从最新的 `.bak` 还原，需要管理员权限时自动提权）。
 
-## 6. REST API 速查
+## 7. REST API 速查
 
 | 操作 | 请求 |
 |---|---|
@@ -176,9 +191,9 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 { "stdout": "Linux server 5.15.0 ...\n", "stderr": "", "exit_code": 0 }
 ```
 
-完整接口文档见 [docs/使用说明.md](docs/使用说明.md) 与技能包内 `references/api.md`。
+完整接口文档见 [docs/通用桥接器使用说明.md](docs/通用桥接器使用说明.md) 与技能包内 `references/api.md`。
 
-## 7. 配置项
+## 8. 配置项
 
 配置文件：`%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json`（首次运行自动生成）
 
@@ -196,7 +211,7 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `log_backup_count` | `5` | 滚动保留份数 |
 | `console_log` | `true` | 是否同时输出到控制台 |
 
-## 8. 日志与排错
+## 9. 日志与排错
 
 日志：`%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\logs\bridge.log`（滚动保留 5 份）
 
@@ -207,16 +222,16 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `/health` 返回 `connected: false` | 看日志末尾：认证失败 / 网络不通 / 参数解析失败 |
 | `no acceptable kex algorithm` | 已内置 Paramiko 2.12.0 兼容旧算法，若仍出现请提 Issue |
 
-完整排错手册见 [docs/使用说明.md](docs/使用说明.md) 与技能包内 `references/troubleshooting.md`。
+完整排错手册见 [docs/通用桥接器使用说明.md](docs/通用桥接器使用说明.md) 与技能包内 `references/troubleshooting.md`。
 
-## 9. 安全与合规（务必阅读）
+## 10. 安全与合规（务必阅读）
 
 - 本项目替换 `putty.exe` 后**会接管堡垒机下发的口令**，请仅在**被授权环境**中部署。
 - API 无鉴权但仅监听 `127.0.0.1`，**本机任何进程均可调用**——请勿在多人共用终端上运行。
 - 日志全量脱敏（口令显示为 `***`），不持久化任何凭证。
 - 详见 [SECURITY.md](SECURITY.md)。
 
-## 10. FAQ
+## 11. FAQ
 
 **Q：杀毒软件报毒？** PyInstaller 单文件 EXE 常见误报，请加白名单，或用 `python main.py <参数>` 源码方式运行。
 
@@ -226,24 +241,23 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 
 **Q：密码会不会泄漏？** 仅存在于进程内存；日志、`to_dict()` 诊断输出均脱敏为 `***`。
 
-## 11. 开发与构建
+## 12. 开发与构建
 
 模块分层：入口 `main.py` → 参数 `params.py` → SSH 引擎 `ssh_client.py` → API `api_server.py`，
-与 [docs/需求说明.md](docs/需求说明.md) 中的通用桥接器规范（FR-001~FR-029）一一对应，
+对外 API 契约与 [docs/通用桥接器使用说明.md](docs/通用桥接器使用说明.md) 保持一致，
 适配其他堡垒机厂商时只需替换 `params.py` 并调整 `main.py` 的应用名/端口。
 
 **CI 发布流程**：给仓库打 tag（如 `v1.0.0`）→ GitHub Actions 在 Windows 环境
-按锁定的 `requirements.txt` 构建 `putty.exe` → 自动发布到 Release。
+按锁定的 `requirements.txt` 构建 `putty.exe` → 自动发布到 Release（含 SHA-256 校验和）。
 手动构建也可在 Actions 页面点 `Run workflow`。
 
-## 12. 相关文档
+## 13. 相关文档
 
-- [docs/需求说明.md](docs/需求说明.md) —— 通用堡垒机桥接器开发规范（含验收标准）
-- [docs/使用说明.md](docs/使用说明.md) —— 使用者/AI 视角的接口说明
+- [docs/通用桥接器使用说明.md](docs/通用桥接器使用说明.md) —— 通用堡垒机桥接器接口使用说明（使用者/AI 视角）
 - [SECURITY.md](SECURITY.md) —— 安全设计与风险告知
 - [README.en.md](README.en.md) —— English version
 
-## 13. License
+## 14. License
 
 [MIT](LICENSE) © plugin-bastion-bridge-qizhi contributors
 
