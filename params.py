@@ -43,6 +43,7 @@ logger = get_logger("params")
 _PASSWORD_FLAGS = {
     "-pw", "-password",
     "--password", "--passwd", "--pass",
+    "--token", "--secret", "--api-key", "--api_key", "--apikey",
 }
 
 
@@ -52,6 +53,22 @@ _USER_HOST_PORT_RE = re.compile(
     r"(?P<host>[^:\s]+)"
     r"(?::(?P<port>\d+))?$"
 )
+
+
+def _mask_inline_secret(value: str) -> str:
+    """Redact credentials embedded in options or user/password host tokens."""
+    option_match = re.match(
+        r"(?i)^(-(?:pw|password)|--(?:password|passwd|pass|token|secret|api[-_]?key))=(.*)$",
+        value,
+    )
+    if option_match:
+        return f"{option_match.group(1)}=***"
+
+    credential_match = re.match(r"(?i)^(ssh://)?([^/@:\s]+):([^@\s]*)@(.+)$", value)
+    if credential_match:
+        scheme = credential_match.group(1) or ""
+        return f"{scheme}{credential_match.group(2)}:***@{credential_match.group(4)}"
+    return value
 
 
 def _mask_argv(argv: List[str]) -> List[str]:
@@ -68,7 +85,7 @@ def _mask_argv(argv: List[str]) -> List[str]:
             masked.append(token)
             skip_next = True
         else:
-            masked.append(token)
+            masked.append(_mask_inline_secret(token))
     return masked
 
 

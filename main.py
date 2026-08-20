@@ -15,7 +15,8 @@ to explain what happened.
 
 from __future__ import annotations
 
-import os
+import json
+import re
 import socket
 import sys
 import time
@@ -34,7 +35,14 @@ except ImportError:
 
 from connection import ConnectionParams
 from config import load_config
-from logger import get_logger, setup_logging
+from logger import (
+    get_app_dir,
+    get_log_path,
+    get_logger,
+    log_blank_line,
+    log_console,
+    setup_logging,
+)
 from params import parse_args
 from ssh_client import SSHBridge
 from api_server import start_api
@@ -50,6 +58,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "retry_delay_seconds": 2,
     "exit_on_connect_failure": False,
     "log_level": "INFO",
+    "console_log": True,
+    "console_verbose": False,
+    "console_output_limit": 12000,
 }
 
 
@@ -68,6 +79,26 @@ def _mask_password(value: Any) -> Any:
     return value
 
 
+def _mask_inline_secret(value: str) -> str:
+    """Redact credentials embedded in an option or SSH-style URL."""
+    option_match = re.match(
+        r"(?i)^(-(?:pw|password)|--(?:password|passwd|pass|token|secret|api[-_]?key)"
+        r"|/(?:password|pass|token|secret|p))=(.*)$",
+        value,
+    )
+    if option_match:
+        return f"{option_match.group(1)}=***"
+
+    credential_match = re.match(
+        r"(?i)^(ssh://)?([^/@:\s]+):([^@\s]*)@(.+)$",
+        value,
+    )
+    if credential_match:
+        scheme = credential_match.group(1) or ""
+        return f"{scheme}{credential_match.group(2)}:***@{credential_match.group(4)}"
+    return value
+
+
 def _mask_argv(argv: List[str]) -> List[str]:
     """Mask values that follow known password-like flags in argv."""
     masked: List[str] = []
@@ -79,40 +110,103 @@ def _mask_argv(argv: List[str]) -> List[str]:
             continue
         lower = token.lower()
         if lower in {
-            "/p", "/password", "/pass", "--password", "--passwd", "--pass",
+            "-pw", "-password", "/p", "/password", "/pass", "/token", "/secret",
+            "--password", "--passwd", "--pass", "--token", "--secret",
+            "--api-key", "--api_key", "--apikey",
         }:
             masked.append(token)
             skip_next = True
         else:
-            masked.append(token)
+            masked.append(_mask_inline_secret(token))
     return masked
 
 
 def _sanitize_diagnostics(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of the diagnostics dict with credentials redacted."""
-    import copy
+    """Return a recursively sanitized copy of parser diagnostics."""
 
-    safe = copy.deepcopy(raw)
-    ns = safe.get("parser_namespace")
-    if isinstance(ns, dict):
-        for key in list(ns.keys()):
-            lower = key.lower()
-            if "password" in lower or "pass" in lower or "secret" in lower or "token" in lower:
-                ns[key] = _mask_password(ns[key])
+    def sanitize(value: Any, key: str = "") -> Any:
+        key_lower = key.lower()
+        sensitive_key = key_lower in {"p", "pass", "pwd", "api_key", "apikey"} or any(
+            marker in key_lower
+            for marker in ("password", "passwd", "secret", "token", "credential")
+        )
+        if sensitive_key:
+            return _mask_password(value)
+        if isinstance(value, dict):
+            return {
+                item_key: sanitize(item_value, str(item_key))
+                for item_key, item_value in value.items()
+            }
+        if isinstance(value, list):
+            if key_lower.endswith("argv"):
+                return _mask_argv([str(item) for item in value])
+            return [sanitize(item) for item in value]
+        if isinstance(value, str):
+            return _mask_inline_secret(value)
+        return value
 
-    # Also mask tokens that appear next to known password flags in argv lists.
-    for key in ("raw_argv", "rewritten_argv"):
-        argv = safe.get(key) or []
-        if isinstance(argv, list):
-            safe[key] = _mask_argv(argv)
+    return sanitize(raw)
 
-    if "final_params" in safe and isinstance(safe["final_params"], dict):
-        fp = safe["final_params"]
-        for key in list(fp.keys()):
-            if "password" in key.lower():
-                fp[key] = _mask_password(fp[key])
 
-    return safe
+def _display_value(value: Any) -> str:
+    """Format a value for the live console without exposing credentials."""
+    if value is None or value == "" or value == {} or value == []:
+        return "（未提供）"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _display_startup(argv: List[str]) -> None:
+    """Show the bridge banner and sanitized gateway arguments."""
+    log_blank_line()
+    log_console("╔══════════════════════════════════════════════════════════╗")
+    log_console("║              齐治堡垒机 SSH 桥接器                       ║")
+    log_console("║      Qizhi Bastion SSH Bridge · PuTTY 安全桥接模式       ║")
+    log_console("╚══════════════════════════════════════════════════════════╝")
+    log_console(">>> 齐治传入参数（敏感字段已脱敏） | 共 %d 项", len(argv))
+    safe_argv = _mask_argv(argv)
+    if not safe_argv:
+        log_console("    （未收到命令行参数）")
+    else:
+        for index, value in enumerate(safe_argv, start=1):
+            log_console("    [%02d] %s", index, value)
+    log_blank_line()
+
+
+def _display_connection_params(params: ConnectionParams) -> None:
+    """Show parsed connection fields with passwords represented by status only."""
+    auth_methods: List[str] = []
+    if params.password:
+        auth_methods.append("密码（已接收，内容已隐藏）")
+    if params.key_path:
+        auth_methods.append("私钥")
+    if not auth_methods:
+        auth_methods.append("未提供凭证")
+
+    safe_extra = _sanitize_diagnostics({"extra": params.extra}).get("extra", {})
+    log_console(">>> 已解析连接参数")
+    log_console("    目标服务器 : %s", _display_value(params.host))
+    log_console("    SSH 端口   : %s", _display_value(params.port))
+    log_console("    登录用户   : %s", _display_value(params.username))
+    log_console("    连接协议   : %s", _display_value(params.protocol))
+    log_console("    认证方式   : %s", " + ".join(auth_methods))
+    log_console("    私钥路径   : %s", _display_value(params.key_path))
+    log_console("    堡垒地址   : %s", _display_value(params.bastion_host))
+    log_console("    扩展参数   : %s", _display_value(safe_extra))
+    log_blank_line()
+
+
+def _display_api_endpoint(host: str, port: int) -> None:
+    """Show the local endpoint and useful discovery locations."""
+    endpoint = f"http://{host}:{port}"
+    log_console("✓ 本地桥接 API 已配置")
+    log_console("    服务地址   : %s", endpoint)
+    log_console("    健康检查   : %s/health", endpoint)
+    log_console("    端口文件   : %s", get_app_dir() / "active_port.txt")
+    log_console("    文件日志   : %s", get_log_path())
+    log_console("    当前状态   : 等待 AI 或脚本发送指令")
+    log_blank_line()
 
 
 def parse_command_line(argv: List[str]) -> Tuple[Optional[ConnectionParams], Dict[str, Any], Optional[str]]:
@@ -159,9 +253,17 @@ def connect_with_retries(
     """Try to establish the SSH connection with a small retry loop."""
     for attempt in range(1, max_attempts + 1):
         logger.info("SSH connect attempt %d/%d (timeout=%d)", attempt, max_attempts, timeout)
+        log_console(">>> 正在连接 SSH | 第 %d/%d 次 | 超时 %d 秒", attempt, max_attempts, timeout)
         try:
             if bridge.connect(timeout=timeout):
                 logger.info("SSH connected successfully")
+                log_console(
+                    "✓ SSH 连接成功 | %s@%s:%s",
+                    bridge.params.username,
+                    bridge.params.host,
+                    bridge.params.port,
+                )
+                log_blank_line()
                 return True
         except Exception as exc:
             logger.exception("SSH connect attempt %d failed: %s", attempt, exc)
@@ -169,6 +271,12 @@ def connect_with_retries(
             logger.info("Retrying SSH connection in %d seconds...", delay)
             time.sleep(delay)
     logger.error("SSH connection failed after %d attempts", max_attempts)
+    log_console(
+        "! SSH 连接失败 | 已尝试 %d 次，API 将以诊断模式继续启动",
+        max_attempts,
+        level=40,
+    )
+    log_blank_line()
     return False
 
 
@@ -195,9 +303,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_bytes=int(config.get("log_max_bytes", 10 * 1024 * 1024)),
         backup_count=int(config.get("log_backup_count", 5)),
         console=bool(config.get("console_log", True)),
+        console_verbose=bool(config.get("console_verbose", False)),
     )
     global logger
     logger = get_logger(__name__)
+
+    _display_startup(argv)
 
     logger.info("=" * 60)
     logger.info("Qizhi SSH Bridge (putty.exe replacement) started")
@@ -214,6 +325,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         params = None
 
     if params is not None:
+        _display_connection_params(params)
+        safe_extra = _sanitize_diagnostics({"extra": params.extra}).get("extra", {})
         logger.info(
             "Parsed connection params: host=%s port=%s username=%s protocol=%s "
             "key_path=%s bastion=%s extra=%r",
@@ -223,7 +336,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             params.protocol,
             params.key_path,
             params.bastion_host,
-            params.extra,
+            safe_extra,
         )
         for key, value in _sanitize_diagnostics(raw_args).items():
             logger.info("Raw/unknown argument: %s = %r", key, value)
@@ -261,6 +374,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 username="unknown",
             )
         )
+        log_console("! 当前为诊断模式：未建立目标 SSH 连接", level=30)
+        log_blank_line()
 
     # Start the local API server (blocks until the process is killed).
     api_host = str(config["api_host"])
@@ -278,7 +393,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Write the active API endpoint to a well-known file so an AI assistant can
     # discover it even when a fallback port was chosen.
     try:
-        from logger import get_app_dir
         port_file = get_app_dir() / "active_port.txt"
         port_file.write_text(f"{api_host}:{api_port}\n", encoding="utf-8")
         logger.info("Active API endpoint written to %s", port_file)
@@ -286,10 +400,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.warning("Could not write active port file: %s", exc)
 
     try:
+        _display_api_endpoint(api_host, api_port)
         start_api(
             bridge,
             host=api_host,
             port=api_port,
+            console_output_limit=int(config.get("console_output_limit", 12000)),
         )
     except KeyboardInterrupt:
         logger.info("Interrupted by user, shutting down")
@@ -302,6 +418,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception as exc:
             logger.debug("Error closing bridge: %s", exc)
         logger.info("Qizhi SSH Bridge (putty.exe replacement) stopped")
+        log_console("! 齐治桥接器已停止", level=30)
 
     return 0
 

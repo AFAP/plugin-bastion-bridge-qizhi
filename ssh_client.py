@@ -292,9 +292,9 @@ class SSHBridge:
         )
         self._keepalive_thread.start()
         self._logger.info(
-            "Keep-alive thread started (interval=%ss, command=%r)",
+            "Keep-alive thread started (interval=%ss, command_length=%d)",
             self._keepalive_interval_seconds,
-            self._keepalive_command,
+            len(self._keepalive_command),
         )
 
     def _stop_keepalive(self) -> None:
@@ -322,9 +322,9 @@ class SSHBridge:
                 continue
 
             self._logger.info(
-                "No activity for %.0fs; sending keep-alive command: %s",
+                "No activity for %.0fs; sending keep-alive command (length=%d)",
                 elapsed,
-                self._keepalive_command,
+                len(self._keepalive_command),
             )
             try:
                 # Use the same execution path as normal commands so that the
@@ -426,8 +426,6 @@ class SSHBridge:
                 exit_code,
                 len(stdout),
             )
-            if stdout:
-                self._logger.info("<<< 服务器返回（shell stdout）:\n%s", stdout.rstrip("\r\n"))
             return {"stdout": stdout.strip("\r\n"), "stderr": "", "exit_code": exit_code}
 
         except Exception as exc:  # noqa: BLE001
@@ -476,7 +474,7 @@ class SSHBridge:
 
             try:
                 self._bump_activity()
-                self._logger.info(">>> 收到指令: %s", command)
+                self._logger.info("Executing command (length=%d)", len(command))
 
                 # Once the server has proven it cannot honour exec_command,
                 # skip the wasted exec attempt and use the shell channel directly.
@@ -500,11 +498,6 @@ class SSHBridge:
                     len(out),
                     len(err),
                 )
-                if out:
-                    self._logger.info("<<< 服务器返回 (stdout):\n%s", out.rstrip("\r\n"))
-                if err:
-                    self._logger.info("<<< 服务器返回 (stderr):\n%s", err.rstrip("\r\n"))
-
                 original_result = {"stdout": out, "stderr": err, "exit_code": exit_code}
 
                 # Some bastion shells reject exec_command and only echo login banner.
@@ -555,7 +548,7 @@ class SSHBridge:
         channel: Optional[paramiko.Channel] = None
         try:
             self._bump_activity()
-            self._logger.info(">>> 收到指令（流式）: %s", command)
+            self._logger.info("Streaming command (length=%d)", len(command))
             transport = self._client.get_transport()
             if transport is None:
                 raise RuntimeError("No active transport")
@@ -576,13 +569,11 @@ class SSHBridge:
                 if channel.recv_ready():
                     data = channel.recv(4096).decode("utf-8", errors="replace")
                     if data:
-                        self._logger.info("<<< 服务器返回（流式 stdout）: %s", data.rstrip("\r\n"))
                         yield {"type": "stdout", "data": data}
 
                 if channel.recv_stderr_ready():
                     data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
                     if data:
-                        self._logger.info("<<< 服务器返回（流式 stderr）: %s", data.rstrip("\r\n"))
                         yield {"type": "stderr", "data": data}
 
                 # Small sleep to avoid spinning the CPU while waiting for output.
@@ -616,7 +607,6 @@ class SSHBridge:
             try:
                 self._bump_activity()
                 payload = data.encode("utf-8", errors="replace")
-                self._logger.info(">>> 收到交互输入: %r", data)
                 self._shell.send(payload)
                 self._logger.debug("Sent %d bytes to interactive shell", len(payload))
                 return True

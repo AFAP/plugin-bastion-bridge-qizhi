@@ -20,11 +20,12 @@
 %LOCALAPPDATA%\sshbridge\QizhiSSHBridge\logs\bridge.log
 ```
 
-滚动保留 5 份，单份默认 10MB。日志关键行为：
+滚动保留 5 份，单份默认 10MB。命令与返回正文只显示在桥接器控制台，不写入日志文件。
+控制台默认用 `>>>` / `<<<` 分块展示指令与服务器返回，交互输入正文始终隐藏。日志关键行为：
 
 - `Parsing argv:` —— 堡垒机实际传参（密码已脱敏），适配新版本齐治时以此为准。
 - `SSH connected successfully` / `SSH connect attempt N failed` —— 连接过程。
-- `>>> 收到指令` / `<<< 服务器返回` —— 每条命令的请求与响应。
+- 命令长度、退出码与 stdout/stderr 字符数 —— 每条命令的元数据。
 - `Keep-alive` —— 空闲保活记录（默认每 60 秒执行一次无害命令）。
 
 ## 配置文件

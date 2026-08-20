@@ -27,18 +27,44 @@ from flask import Flask, Response, jsonify, request
 from flask_socketio import SocketIO, emit
 
 from connection import ConnectionParams
-from logger import get_logger, log_blank_line
+from logger import get_logger, log_blank_line, log_console
 from ssh_client import SSHBridge
 
 
 logger = get_logger(__name__)
 
 
+def _preview_text(value: Any, limit: int) -> tuple[str, bool]:
+    """Return terminal-safe preview text and whether it was truncated."""
+    raw = "" if value is None else str(value)
+    truncated = len(raw) > limit
+    if truncated:
+        raw = raw[:limit]
+
+    # Prevent remote output from injecting terminal control sequences while
+    # preserving normal newlines and tabs for readable command output.
+    raw = raw.replace("\r\n", "\n").replace("\r", "\\r")
+    escaped = []
+    for char in raw:
+        code = ord(char)
+        if char in {"\n", "\t"} or (code >= 32 and code != 127):
+            escaped.append(char)
+        else:
+            escaped.append(f"\\x{code:02x}")
+    text = "".join(escaped).rstrip("\n")
+    if not text:
+        text = "（无输出）"
+    if truncated:
+        text += f"\n…（控制台预览已截断，原始内容共 {len(str(value))} 字符）"
+    return text, truncated
+
+
 class BridgeAPI:
     """Flask/SocketIO wrapper around an SSHBridge instance."""
 
-    def __init__(self, bridge: SSHBridge) -> None:
+    def __init__(self, bridge: SSHBridge, console_output_limit: int = 12000) -> None:
         self.bridge: SSHBridge = bridge
+        self.console_output_limit = max(256, int(console_output_limit))
         self.app: Flask = Flask(__name__)
         self.app.config["JSON_AS_ASCII"] = False
         self.socketio: SocketIO = SocketIO(
@@ -54,6 +80,113 @@ class BridgeAPI:
         self._interactive_reader: Optional[threading.Thread] = None
         self._register_routes()
         self._register_socketio_events()
+
+    def _show_command(self, source: str, command: str, timeout: Optional[int] = None) -> None:
+        """Show a received command in a console-only block."""
+        preview, _ = _preview_text(command, self.console_output_limit)
+        timeout_text = f" | 超时 {timeout} 秒" if timeout is not None else ""
+        log_blank_line()
+        log_console(
+            ">>> 收到服务器指令 | 来源 %s | 长度 %d%s",
+            source,
+            len(command),
+            timeout_text,
+        )
+        log_console("┌─ 指令正文")
+        log_console("%s", preview)
+        log_console("└─ 指令结束")
+
+    def _show_result(self, source: str, result: Dict[str, Any], elapsed: float) -> None:
+        """Show a non-streaming server result without persisting its body."""
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        exit_code = result.get("exit_code", -1)
+        stdout_preview, stdout_truncated = _preview_text(stdout, self.console_output_limit)
+        stderr_preview, stderr_truncated = _preview_text(stderr, self.console_output_limit)
+        log_console(
+            "<<< 服务器执行结果 | 来源 %s | 退出码 %s | 耗时 %.3f 秒",
+            source,
+            exit_code,
+            elapsed,
+        )
+        log_console("┌─ stdout（%d 字符）", len(str(stdout)))
+        log_console("%s", stdout_preview)
+        log_console("├─ stderr（%d 字符）", len(str(stderr)))
+        log_console("%s", stderr_preview)
+        if stdout_truncated or stderr_truncated:
+            log_console(
+                "! 输出较长，仅展示前 %d 字符；API 返回值保持完整",
+                self.console_output_limit,
+                level=30,
+            )
+        log_console("└─ 返回结束")
+        log_blank_line()
+
+    def _show_failure(self, source: str, exc: Exception, elapsed: float) -> None:
+        preview, _ = _preview_text(exc, self.console_output_limit)
+        log_console(
+            "<<< 服务器执行异常 | 来源 %s | 耗时 %.3f 秒\n%s",
+            source,
+            elapsed,
+            preview,
+            level=40,
+        )
+        log_blank_line()
+
+    def _show_stream_chunk(self, stream_type: str, data: Any, remaining: int) -> tuple[int, bool]:
+        """Show one streaming chunk within the total console preview budget."""
+        raw = "" if data is None else str(data)
+        if not raw:
+            return 0, False
+        if remaining <= 0:
+            return 0, True
+        visible = raw[:remaining]
+        preview, _ = _preview_text(visible, remaining)
+        log_console("<<< 流式 %s\n%s", stream_type, preview)
+        return len(visible), len(raw) > remaining
+
+    def _show_stream_summary(
+        self,
+        source: str,
+        exit_code: Any,
+        elapsed: float,
+        stdout_chars: int,
+        stderr_chars: int,
+        truncated: bool,
+    ) -> None:
+        log_console(
+            "<<< 流式执行完成 | 来源 %s | 退出码 %s | 耗时 %.3f 秒 "
+            "| stdout %d 字符 | stderr %d 字符",
+            source,
+            exit_code if exit_code is not None else "未知",
+            elapsed,
+            stdout_chars,
+            stderr_chars,
+        )
+        if truncated:
+            log_console(
+                "! 流式输出超过 %d 字符，后续内容不再刷屏；API/SSE 数据保持完整",
+                self.console_output_limit,
+                level=30,
+            )
+        log_blank_line()
+
+    @staticmethod
+    def _show_interactive_input(source: str, data: str) -> None:
+        """Show interactive input metadata, never the potentially secret body."""
+        log_blank_line()
+        log_console(
+            ">>> 收到交互输入 | 来源 %s | 长度 %d | 内容已安全隐藏",
+            source,
+            len(data),
+        )
+
+    @staticmethod
+    def _show_interactive_status(ok: bool, message: str) -> None:
+        level = 20 if ok else 30
+        prefix = "✓" if ok else "!"
+        log_console("%s 交互输入处理结果 | %s", prefix, message, level=level)
+        log_blank_line()
 
     # ------------------------------------------------------------------
     # HTTP routes
@@ -77,16 +210,18 @@ class BridgeAPI:
                 return jsonify({"error": "missing or invalid 'command' field"}), 400
 
             timeout = self._positive_int(payload.get("timeout"), 30)
-            logger.info("收到请求 /execute，指令: %r（超时 %d 秒）", command, timeout)
+            logger.info("/execute command_len=%d timeout=%d", len(command), timeout)
+            self._show_command("HTTP /execute", command, timeout)
+            started = time.perf_counter()
 
             try:
                 result = self.bridge.execute(command, timeout=timeout)
-                logger.info("请求 /execute 处理完毕，退出码: %s", result.get("exit_code"))
-                log_blank_line()
+                logger.info("/execute finished exit_code=%s", result.get("exit_code"))
+                self._show_result("HTTP /execute", result, time.perf_counter() - started)
                 return jsonify(result)
             except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("/execute 执行失败: %s", exc)
-                log_blank_line()
+                logger.exception("/execute failed: %s", exc)
+                self._show_failure("HTTP /execute", exc, time.perf_counter() - started)
                 return jsonify(self._error_payload("execute failed", exc)), 500
 
         @self.app.route("/stream", methods=["GET"])
@@ -95,23 +230,54 @@ class BridgeAPI:
             if not command:
                 return jsonify({"error": "missing 'command' query parameter"}), 400
 
-            logger.info("收到请求 /stream（SSE），指令: %r", command)
+            logger.info("/stream SSE command_len=%d", len(command))
+            self._show_command("HTTP SSE /stream", command)
 
             def event_stream():
+                started = time.perf_counter()
+                displayed_chars = 0
+                stdout_chars = 0
+                stderr_chars = 0
+                exit_code: Any = None
+                truncated = False
                 try:
                     yield self._sse_event(
                         "start", {"command": command, "connected": self.bridge.is_connected()}
                     )
                     for chunk in self.bridge.stream_execute(command):
                         event_type = chunk.get("type", "stdout")
-                        data = chunk.get("data", "")
-                        yield self._sse_event(event_type, {"data": data})
+                        if event_type == "exit":
+                            exit_code = chunk.get("exit_code", -1)
+                            payload = {"exit_code": exit_code}
+                        else:
+                            data = chunk.get("data", "")
+                            payload = {"data": data}
+                            if event_type == "stderr":
+                                stderr_chars += len(str(data))
+                            else:
+                                stdout_chars += len(str(data))
+                            used, clipped = self._show_stream_chunk(
+                                event_type,
+                                data,
+                                self.console_output_limit - displayed_chars,
+                            )
+                            displayed_chars += used
+                            truncated = truncated or clipped
+                        yield self._sse_event(event_type, payload)
                 except Exception as exc:
-                    logger.exception("/stream SSE 执行失败: %s", exc)
+                    logger.exception("/stream SSE failed: %s", exc)
+                    self._show_failure("HTTP SSE /stream", exc, time.perf_counter() - started)
                     yield self._sse_event("error", self._error_payload("stream failed", exc))
                 finally:
                     yield self._sse_event("end", {})
-                    log_blank_line()
+                    self._show_stream_summary(
+                        "HTTP SSE /stream",
+                        exit_code,
+                        time.perf_counter() - started,
+                        stdout_chars,
+                        stderr_chars,
+                        truncated,
+                    )
 
             return Response(
                 event_stream(),
@@ -130,9 +296,10 @@ class BridgeAPI:
             if data is None or not isinstance(data, str):
                 return jsonify({"error": "missing or invalid 'data' field"}), 400
 
-            logger.info("收到请求 /input，数据长度: %d", len(data))
+            logger.info("/input data_len=%d", len(data))
+            self._show_interactive_input("HTTP /input", data)
             ok, message = self._send_interactive_input(data)
-            log_blank_line()
+            self._show_interactive_status(ok, message)
             if not ok:
                 return jsonify({"error": message}), 503
             return jsonify({"status": "ok", "message": message})
@@ -163,15 +330,17 @@ class BridgeAPI:
                 emit("error", {"error": "missing or invalid 'command'"})
                 return
             timeout = self._positive_int((payload or {}).get("timeout"), 30)
-            logger.info("收到 WebSocket 指令: %r（超时 %d 秒）", command, timeout)
+            logger.info("Socket.IO execute command_len=%d timeout=%d", len(command), timeout)
+            self._show_command("Socket.IO execute", command, timeout)
+            started = time.perf_counter()
             try:
                 result = self.bridge.execute(command, timeout=timeout)
+                self._show_result("Socket.IO execute", result, time.perf_counter() - started)
                 emit("result", result)
             except Exception as exc:
-                logger.exception("WebSocket 指令执行失败: %s", exc)
+                logger.exception("/ws execute failed: %s", exc)
+                self._show_failure("Socket.IO execute", exc, time.perf_counter() - started)
                 emit("error", self._error_payload("execute failed", exc))
-            finally:
-                log_blank_line()
 
         @self.socketio.on("stream")
         def on_stream(payload: Dict[str, Any]) -> None:
@@ -179,20 +348,51 @@ class BridgeAPI:
             if not command or not isinstance(command, str):
                 emit("error", {"error": "missing or invalid 'command'"})
                 return
-            logger.info("收到 WebSocket 流式指令: %r", command)
+            logger.info("Socket.IO stream command_len=%d", len(command))
+            self._show_command("Socket.IO stream", command)
+            started = time.perf_counter()
+            displayed_chars = 0
+            stdout_chars = 0
+            stderr_chars = 0
+            exit_code: Any = None
+            truncated = False
             try:
                 emit(
                     "start",
                     {"command": command, "connected": self.bridge.is_connected()},
                 )
                 for chunk in self.bridge.stream_execute(command):
+                    event_type = chunk.get("type", "stdout")
+                    if event_type == "exit":
+                        exit_code = chunk.get("exit_code", -1)
+                    else:
+                        data = chunk.get("data", "")
+                        if event_type == "stderr":
+                            stderr_chars += len(str(data))
+                        else:
+                            stdout_chars += len(str(data))
+                        used, clipped = self._show_stream_chunk(
+                            event_type,
+                            data,
+                            self.console_output_limit - displayed_chars,
+                        )
+                        displayed_chars += used
+                        truncated = truncated or clipped
                     emit("output", chunk)
                 emit("end", {})
             except Exception as exc:
-                logger.exception("WebSocket 流式指令执行失败: %s", exc)
+                logger.exception("/ws stream failed: %s", exc)
+                self._show_failure("Socket.IO stream", exc, time.perf_counter() - started)
                 emit("error", self._error_payload("stream failed", exc))
             finally:
-                log_blank_line()
+                self._show_stream_summary(
+                    "Socket.IO stream",
+                    exit_code,
+                    time.perf_counter() - started,
+                    stdout_chars,
+                    stderr_chars,
+                    truncated,
+                )
 
         @self.socketio.on("input")
         def on_input(payload: Dict[str, Any]) -> None:
@@ -200,9 +400,10 @@ class BridgeAPI:
             if data is None or not isinstance(data, str):
                 emit("error", {"error": "missing or invalid 'data'"})
                 return
+            self._show_interactive_input("Socket.IO input", data)
             ok, message = self._send_interactive_input(data)
+            self._show_interactive_status(ok, message)
             emit("input_status", {"ok": ok, "message": message})
-            log_blank_line()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -255,8 +456,10 @@ class BridgeAPI:
         send_input = getattr(self.bridge, "send_input", None)
         if callable(send_input):
             try:
-                send_input(data)
-                return True, "sent via bridge"
+                sent = send_input(data)
+                if sent is not False:
+                    return True, "sent via bridge"
+                logger.warning("bridge.send_input reported that no interactive shell was available")
             except Exception as exc:
                 logger.warning("bridge.send_input failed: %s", exc)
 
@@ -305,18 +508,20 @@ class BridgeAPI:
                 if shell.recv_ready():
                     data = shell.recv(4096).decode("utf-8", errors="replace")
                     if data:
-                        logger.info("<<< 服务器返回（交互 stdout）: %s", data.rstrip("\r\n"))
+                        preview, _ = _preview_text(data, self.console_output_limit)
+                        log_console("<<< 交互式 stdout\n%s", preview)
                         self._interactive_queue.put({"type": "stdout", "data": data})
                 if shell.recv_stderr_ready():
                     data = shell.recv_stderr(4096).decode("utf-8", errors="replace")
                     if data:
-                        logger.info("<<< 服务器返回（交互 stderr）: %s", data.rstrip("\r\n"))
+                        preview, _ = _preview_text(data, self.console_output_limit)
+                        log_console("<<< 交互式 stderr\n%s", preview, level=30)
                         self._interactive_queue.put({"type": "stderr", "data": data})
                 time.sleep(0.05)
         except Exception as exc:
             logger.debug("interactive shell reader exited: %s", exc)
 
-    def run(self, host: str = "127.0.0.1", port: int = 8765) -> None:
+    def run(self, host: str = "127.0.0.1", port: int = 8766) -> None:
         """Start the API server and block until shutdown."""
         logger.info("Starting Qizhi SSH Bridge API on %s:%d", host, port)
         try:
@@ -345,13 +550,19 @@ class BridgeAPI:
                 self._interactive_shell = None
 
 
-def start_api(bridge: SSHBridge, host: str = "127.0.0.1", port: int = 8765) -> None:
+def start_api(
+    bridge: SSHBridge,
+    host: str = "127.0.0.1",
+    port: int = 8766,
+    console_output_limit: int = 12000,
+) -> None:
     """Public entry point used by ``main.py``.
 
     Args:
         bridge: An already-instantiated (and preferably connected) SSHBridge.
         host: Local interface to bind to. Defaults to loopback for safety.
         port: TCP port for the API server.
+        console_output_limit: Maximum command/output characters shown per block.
     """
-    api = BridgeAPI(bridge)
+    api = BridgeAPI(bridge, console_output_limit=console_output_limit)
     api.run(host=host, port=port)

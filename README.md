@@ -58,7 +58,8 @@
 - ✅ **完整 API**：`/health`、`/execute`、`/stream`(SSE)、`/input`、`/ws`(Socket.IO)
 - ✅ **端口自动发现**：实际监听地址写入 `active_port.txt`，AI 免配置直接读取
 - ✅ **空闲保活**：默认 60 秒无命令自动发无害命令，防止堡垒机断连
-- ✅ **安全默认**：仅监听 `127.0.0.1`、日志全量脱敏、不持久化任何凭证
+- ✅ **直观控制台**：彩色展示脱敏后的启动参数、连接状态、收到的指令、退出码与服务器返回
+- ✅ **安全默认**：仅监听 `127.0.0.1`；命令与返回正文只在当前控制台预览，不写入日志文件
 - ✅ **DeepSeek Harness 技能插件**：一键安装后 AI 自动获得「运维服务器」能力
 
 ## 3. 效果预览
@@ -209,11 +210,17 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `log_level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `log_max_bytes` | `10485760` | 单日志文件上限（10MB） |
 | `log_backup_count` | `5` | 滚动保留份数 |
-| `console_log` | `true` | 是否同时输出到控制台 |
+| `console_log` | `true` | 是否显示彩色控制台状态、指令与返回预览 |
+| `console_verbose` | `false` | 是否在控制台同时显示详细 INFO/DEBUG 技术日志 |
+| `console_output_limit` | `12000` | 单个指令或输出字段的控制台预览上限；不影响 API 返回的完整数据 |
 
 ## 9. 日志与排错
 
 日志：`%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\logs\bridge.log`（滚动保留 5 份）
+
+控制台用 `>>>` 标识收到的参数或指令，用 `<<<` 标识服务器返回，并展示来源、耗时、
+退出码以及 stdout/stderr 字符数。密码和交互输入正文始终隐藏；指令与返回正文仅显示在
+当前控制台，`bridge.log` 仍只记录长度、退出码和连接状态等元数据。
 
 | 现象 | 排查方向 |
 |---|---|
@@ -228,7 +235,8 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 
 - 本项目替换 `putty.exe` 后**会接管堡垒机下发的口令**，请仅在**被授权环境**中部署。
 - API 无鉴权但仅监听 `127.0.0.1`，**本机任何进程均可调用**——请勿在多人共用终端上运行。
-- 日志全量脱敏（口令显示为 `***`），不持久化任何凭证。
+- 口令、Token 与 API Key 参数会脱敏，命令与输出正文不写入日志文件。
+- 控制台可能展示服务器业务输出；操作结束后请关闭窗口，不要截图或转发敏感内容。
 - 详见 [SECURITY.md](SECURITY.md)。
 
 ## 11. FAQ

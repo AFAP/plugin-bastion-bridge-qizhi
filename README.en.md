@@ -60,7 +60,8 @@ This project replaces that `putty.exe` with a **dedicated bridge**:
 - ✅ **Full API**: `/health`, `/execute`, `/stream` (SSE), `/input`, `/ws` (Socket.IO)
 - ✅ **Auto port discovery**: live endpoint written to `active_port.txt`, AI reads it with zero config
 - ✅ **Idle keep-alive**: sends a harmless command after 60 s of inactivity to prevent bastion disconnects
-- ✅ **Secure by default**: loopback-only binding, fully redacted logs, no credential persistence
+- ✅ **Readable console**: colored blocks show sanitized launch fields, connection state, commands, exit codes, and server results
+- ✅ **Secure by default**: loopback-only binding; command/result bodies are previewed only in the live console, never in log files
 - ✅ **DeepSeek Harness skill plugin**: after one-line install, your AI gains "operate servers" ability
 
 ## 3. Screenshots
@@ -211,11 +212,18 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 | `log_level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `log_max_bytes` | `10485760` | Max log file size (10 MB) |
 | `log_backup_count` | `5` | Rotating backups kept |
-| `console_log` | `true` | Also print to console |
+| `console_log` | `true` | Show colored status, command, and response previews in the console |
+| `console_verbose` | `false` | Also show detailed INFO/DEBUG technical records in the console |
+| `console_output_limit` | `12000` | Per-command or output-field preview limit; full API responses are unaffected |
 
 ## 9. Logs & troubleshooting
 
 Logs: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\logs\bridge.log` (rotating, 5 kept)
+
+The console uses `>>>` for received parameters or commands and `<<<` for server responses,
+including source, duration, exit code, and stdout/stderr sizes. Passwords and interactive-input
+bodies remain hidden. Command and response bodies are live-console only; `bridge.log` keeps
+metadata such as lengths, exit codes, and connection status.
 
 | Symptom | Where to look |
 |---|---|
@@ -230,7 +238,8 @@ Full troubleshooting guide: [docs/通用桥接器使用说明.md](docs/通用桥
 
 - Replacing `putty.exe` means the bridge **takes over credentials issued by the bastion** — **deploy only in authorized environments**.
 - The API has no auth but binds loopback only, and **any local process can call it** — do not run on shared terminals.
-- All logs are redacted (passwords shown as `***`); no credentials are persisted.
+- Password, token, and API-key arguments are redacted; command/output bodies are never written to log files.
+- The console can display sensitive server output. Close it after use and do not share screenshots containing business data.
 - See [SECURITY.md](SECURITY.md).
 
 ## 11. FAQ

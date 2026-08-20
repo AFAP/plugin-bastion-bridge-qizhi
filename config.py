@@ -37,7 +37,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Log rotation.
     "log_max_bytes": 10 * 1024 * 1024,
     "log_backup_count": 5,
+    # Live console: show sanitized startup fields and command/result previews.
+    # Preview bodies are excluded from bridge.log by logger.py.
     "console_log": True,
+    "console_verbose": False,
+    "console_output_limit": 12000,
 }
 
 
