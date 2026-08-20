@@ -1,8 +1,8 @@
 ﻿# 一键安装「齐治堡垒机桥接器」DeepSeek Harness 技能插件（可选：同时部署桥接器 putty.exe）。
 #
-# 1. 把仓库中的技能包 skill/qizhi-bastion 安装到 %USERPROFILE%\.dsh\skills\qizhi-bastion
+# 1. 把仓库中的技能包 skill/bastion-qizhi 安装到 %USERPROFILE%\.dsh\skills\bastion-qizhi
 #    （若设置了 DSH_HOME 环境变量则使用 DSH_HOME）。DeepSeek Harness 实时监听该目录，
-#    安装后无需重启即可在会话中使用 /qizhi-bastion 或让 AI 自动调用。
+#    安装后无需重启即可在会话中使用 /bastion-qizhi 或让 AI 自动调用。
 # 2. 使用 -InstallBridge 时，从 GitHub Release 下载 putty.exe，备份并替换齐治客户端
 #    目录中的原 putty.exe（需要管理员权限时自动弹出 UAC 提权）。
 #
@@ -48,20 +48,22 @@ function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundCol
 function Write-Ok([string]$Message)   { Write-Host "    [OK] $Message" -ForegroundColor Green }
 function Write-Warn2([string]$Message){ Write-Host "    [注意] $Message" -ForegroundColor Yellow }
 
-function Resolve-SkillTarget {
+function Resolve-SkillsRoot {
     if ($env:DSH_HOME -and $env:DSH_HOME.Trim().Length -gt 0) {
-        return Join-Path $env:DSH_HOME "skills\qizhi-bastion"
+        return Join-Path $env:DSH_HOME "skills"
     }
-    return Join-Path $HOME ".dsh\skills\qizhi-bastion"
+    return Join-Path $HOME ".dsh\skills"
 }
 
 # ---------- 1. 定位技能包（本地克隆优先，否则从 GitHub 下载仓库 zip） ----------
-$SkillTarget = Resolve-SkillTarget
+$SkillsRoot = Resolve-SkillsRoot
+$SkillTarget = Join-Path $SkillsRoot "bastion-qizhi"
+$LegacySkillTarget = Join-Path $SkillsRoot "qizhi-bastion"
 $ScriptDir = $null
 if ($PSScriptRoot) { $ScriptDir = $PSScriptRoot }
 $BundleSource = $null
 $LocalBundle = $null
-if ($ScriptDir) { $LocalBundle = Join-Path $ScriptDir "..\skill\qizhi-bastion" }
+if ($ScriptDir) { $LocalBundle = Join-Path $ScriptDir "..\skill\bastion-qizhi" }
 
 if ($LocalBundle -and (Test-Path (Join-Path $LocalBundle "SKILL.md"))) {
     $BundleSource = $LocalBundle
@@ -85,7 +87,7 @@ if ($LocalBundle -and (Test-Path (Join-Path $LocalBundle "SKILL.md"))) {
         if (Test-Path $ExtractDir) { Remove-Item $ExtractDir -Recurse -Force }
         Expand-Archive -Path $ZipPath -DestinationPath $ExtractDir -Force
         $RefFolder = $Ref -replace '/', '-'
-        $BundleSource = Join-Path $ExtractDir "$Repo-$RefFolder\skill\qizhi-bastion"
+        $BundleSource = Join-Path $ExtractDir "$Repo-$RefFolder\skill\bastion-qizhi"
     }
 }
 
@@ -98,6 +100,10 @@ if (-not (Test-Path (Join-Path $BundleSource "SKILL.md"))) {
 Write-Step "安装 DSH 技能插件到：$SkillTarget"
 if (-not $WhatIf) {
     if (Test-Path $SkillTarget) { Remove-Item $SkillTarget -Recurse -Force }
+    if (Test-Path $LegacySkillTarget) {
+        Remove-Item $LegacySkillTarget -Recurse -Force
+        Write-Ok "已删除旧技能 qizhi-bastion。"
+    }
     New-Item -ItemType Directory -Force -Path (Split-Path $SkillTarget -Parent) | Out-Null
     Copy-Item -Path $BundleSource -Destination $SkillTarget -Recurse
     # 清理本地开发时产生的 Python 缓存，保证安装目录始终干净
@@ -107,12 +113,13 @@ if (-not $WhatIf) {
     Get-ChildItem $SkillTarget -Recurse -File | ForEach-Object { Write-Host "      $($_.FullName)" }
 } else {
     Write-Warn2 "WhatIf：将复制 $BundleSource -> $SkillTarget"
+    Write-Warn2 "WhatIf：若存在则删除旧技能 $LegacySkillTarget"
 }
 
 Write-Host ""
 Write-Host "======== 技能插件安装完成 ========" -ForegroundColor Green
 Write-Host "DeepSeek Harness 已实时加载该技能（无需重启）。使用方法："
-Write-Host "  * 在 DSH 对话中直接输入 /qizhi-bastion 唤起技能；"
+Write-Host "  * 在 DSH 对话中直接输入 /bastion-qizhi 唤起技能；"
 Write-Host "  * 或让 AI 完成与「齐治堡垒机服务器操作」相关的任务，它会自动调用该技能。"
 Write-Host ""
 

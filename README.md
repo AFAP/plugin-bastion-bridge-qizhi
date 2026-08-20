@@ -15,7 +15,7 @@
 
 | 你的身份 | 接入方式 |
 |---|---|
-| 🎯 **DeepSeek Harness 用户** | 一行命令安装技能插件，AI 立即获得服务器运维能力：对话中输入 `/qizhi-bastion`，或直接派任务（"看看 10.2.1.5 的磁盘"） |
+| 🎯 **DeepSeek Harness 用户** | 一行命令安装技能插件，AI 立即获得服务器运维能力：对话中输入 `/bastion-qizhi`，或直接派任务（"看看 10.2.1.5 的磁盘"） |
 | 🌐 **任何 AI / Agent / 脚本** | 桥接器本质是**本地 RESTful API**（HTTP / SSE / WebSocket），本文档就是完整 API 说明——**只要能发 HTTP 请求的 AI 都能接入**（DeepSeek、Claude Code、Cursor、自研 Agent、curl 脚本……），与语言和框架无关 |
 
 ---
@@ -84,7 +84,7 @@ plugin-bastion-bridge-qizhi/
 ├── logger.py                # 滚动日志 + 脱敏
 ├── requirements.txt         # 运行/构建依赖（已锁定版本，CI 可复现）
 ├── putty.spec               # PyInstaller 打包配置
-├── skill/qizhi-bastion/     # DeepSeek Harness 技能插件（安装后位于用户目录 ~\.dsh\skills\qizhi-bastion）
+├── skill/bastion-qizhi/     # DeepSeek Harness 技能插件（安装后位于用户目录 ~\.dsh\skills\bastion-qizhi）
 │   ├── SKILL.md             #   技能指令（AI 的操作手册）
 │   ├── scripts/bridge.py    #   AI 可调用的命令行客户端（纯标准库）
 │   └── references/          #   API 参考 + 排错手册
@@ -105,10 +105,10 @@ plugin-bastion-bridge-qizhi/
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/AFAP/plugin-bastion-bridge-qizhi/main/scripts/install.ps1 | iex"
 ```
 
-脚本会把技能包安装到 `%USERPROFILE%\.dsh\skills\qizhi-bastion\`（若设置了 `DSH_HOME` 则用 `DSH_HOME`）。
+脚本会把技能包安装到 `%USERPROFILE%\.dsh\skills\bastion-qizhi\`（若设置了 `DSH_HOME` 则用 `DSH_HOME`）。
 DeepSeek Harness 实时监听该目录，**安装后无需重启**：
 
-- 在 DSH 对话中直接输入 `/qizhi-bastion` 唤起技能；
+- 在 DSH 对话中直接输入 `/bastion-qizhi` 唤起技能；
 - 或直接给 AI 派任务（"帮我看看 10.2.1.5 的磁盘使用率"），AI 会自动调用该技能。
 
 ### 5.2 同时部署桥接器 EXE（从 Release 下载）

@@ -25,21 +25,28 @@ function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundCol
 function Write-Ok([string]$Message)   { Write-Host "    [OK] $Message" -ForegroundColor Green }
 function Write-Warn2([string]$Message){ Write-Host "    [注意] $Message" -ForegroundColor Yellow }
 
-$SkillTarget = Join-Path $HOME ".dsh\skills\qizhi-bastion"
+$SkillsRoot = Join-Path $HOME ".dsh\skills"
 if ($env:DSH_HOME -and $env:DSH_HOME.Trim().Length -gt 0) {
-    $SkillTarget = Join-Path $env:DSH_HOME "skills\qizhi-bastion"
+    $SkillsRoot = Join-Path $env:DSH_HOME "skills"
 }
 
-Write-Step "卸载 DSH 技能插件：$SkillTarget"
-if (Test-Path $SkillTarget) {
-    if (-not $WhatIf) {
-        Remove-Item $SkillTarget -Recurse -Force
-        Write-Ok "已删除。"
+$SkillTargets = @(
+    (Join-Path $SkillsRoot "bastion-qizhi"),
+    (Join-Path $SkillsRoot "qizhi-bastion")
+)
+
+foreach ($SkillTarget in $SkillTargets) {
+    Write-Step "卸载 DSH 技能插件：$SkillTarget"
+    if (Test-Path $SkillTarget) {
+        if (-not $WhatIf) {
+            Remove-Item $SkillTarget -Recurse -Force
+            Write-Ok "已删除。"
+        } else {
+            Write-Warn2 "WhatIf：将删除 $SkillTarget"
+        }
     } else {
-        Write-Warn2 "WhatIf：将删除 $SkillTarget"
+        Write-Ok "技能插件不存在，无需删除。"
     }
-} else {
-    Write-Ok "技能插件不存在，无需删除。"
 }
 
 if ($RestoreBridge) {

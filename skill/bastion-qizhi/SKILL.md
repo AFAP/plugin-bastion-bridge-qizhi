@@ -1,5 +1,5 @@
 ---
-name: qizhi-bastion
+name: bastion-qizhi
 description: 通过齐治堡垒机桥接器的本地 REST API 在目标服务器上执行命令、流式查看输出、发送交互输入，让 AI 直接接管并运维服务器。
 whenToUse: 用户要求操作齐治堡垒机已连接的服务器（查询状态、执行命令、看日志、部署、排障等），或提到堡垒机/桥接器/sshbridge/8766 端口时。
 ---

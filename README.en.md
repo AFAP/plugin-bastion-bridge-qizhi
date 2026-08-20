@@ -15,7 +15,7 @@
 
 | You are | How you plug in |
 |---|---|
-| 🎯 **DeepSeek Harness user** | One-line install of the skill plugin — your AI gains server-ops ability right away (`/qizhi-bastion`, or just assign it a task like "check disk usage on 10.2.1.5") |
+| 🎯 **DeepSeek Harness user** | One-line install of the skill plugin — your AI gains server-ops ability right away (`/bastion-qizhi`, or just assign it a task like "check disk usage on 10.2.1.5") |
 | 🌐 **Any AI / agent / script** | The bridge is just a **local RESTful API** (HTTP / SSE / WebSocket) and this README is its API reference — **any AI that can send HTTP requests can use it** (DeepSeek, Claude Code, Cursor, custom agents, curl…), framework-agnostic |
 
 ---
@@ -86,7 +86,7 @@ plugin-bastion-bridge-qizhi/
 ├── logger.py                # Rotating logs + redaction
 ├── requirements.txt         # Runtime/build deps (pinned, CI reproducible)
 ├── putty.spec               # PyInstaller packaging config
-├── skill/qizhi-bastion/     # DeepSeek Harness skill plugin (installed to ~\.dsh\skills\qizhi-bastion)
+├── skill/bastion-qizhi/     # DeepSeek Harness skill plugin (installed to ~\.dsh\skills\bastion-qizhi)
 │   ├── SKILL.md             #   Skill instructions (the AI's manual)
 │   ├── scripts/bridge.py    #   CLI client for the AI (pure stdlib)
 │   └── references/          #   API reference + troubleshooting guide
@@ -107,10 +107,10 @@ plugin-bastion-bridge-qizhi/
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/AFAP/plugin-bastion-bridge-qizhi/main/scripts/install.ps1 | iex"
 ```
 
-The script installs the skill bundle to `%USERPROFILE%\.dsh\skills\qizhi-bastion\` (or `$DSH_HOME` if set).
+The script installs the skill bundle to `%USERPROFILE%\.dsh\skills\bastion-qizhi\` (or `$DSH_HOME` if set).
 DeepSeek Harness hot-reloads that directory, so the skill works **without a restart**:
 
-- Type `/qizhi-bastion` in a DSH chat to invoke the skill;
+- Type `/bastion-qizhi` in a DSH chat to invoke the skill;
 - Or just assign the AI a task ("check disk usage on 10.2.1.5") and it will load the skill automatically.
 
 ### 5.2 Also deploy the bridge EXE (download from Release)
