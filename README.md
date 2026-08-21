@@ -15,7 +15,7 @@
 
 | 你的身份 | 接入方式 |
 |---|---|
-| 🎯 **DeepSeek Harness 用户** | 一行命令安装技能插件，AI 立即获得服务器运维能力：对话中输入 `/bastion-qizhi`，或直接派任务（"看看 10.2.1.5 的磁盘"） |
+| 🎯 **DeepSeek Harness 用户** | 一行命令安装技能插件；需要操作服务器时，在对话中输入 `/bastion-qizhi` 手动唤起 |
 | 🌐 **任何 AI / Agent / 脚本** | 桥接器本质是**本地 RESTful API**（HTTP / SSE / WebSocket），本文档就是完整 API 说明——**只要能发 HTTP 请求的 AI 都能接入**（DeepSeek、Claude Code、Cursor、自研 Agent、curl 脚本……），与语言和框架无关 |
 
 ---
@@ -60,13 +60,13 @@
 - ✅ **空闲保活**：默认 60 秒无命令自动发无害命令，防止堡垒机断连
 - ✅ **直观控制台**：彩色展示脱敏后的启动参数、连接状态、收到的指令、退出码与服务器返回
 - ✅ **安全默认**：仅监听 `127.0.0.1`；命令与返回正文只在当前控制台预览，不写入日志文件
-- ✅ **DeepSeek Harness 技能插件**：一键安装后 AI 自动获得「运维服务器」能力
+- ✅ **DeepSeek Harness 技能插件**：仅在输入 `/bastion-qizhi` 时加载，不自动注入模型上下文
 
 ## 3. 效果预览
 
 | 场景 | 截图 |
 |---|---|
-| 在 DeepSeek Harness 对话中直接派运维任务，AI 自动唤起技能并执行 | <img src="screenshot/DeepSeek%20Harness中使用方式.png" alt="DeepSeek Harness 中使用方式" width="480"> |
+| 在 DeepSeek Harness 对话中输入 `/bastion-qizhi`，手动唤起技能并执行 | <img src="screenshot/DeepSeek%20Harness中使用方式.png" alt="DeepSeek Harness 中使用方式" width="480"> |
 | AI 通过桥接器 API 在目标服务器执行命令、拿到结构化结果 | <img src="screenshot/DeepSeek%20Harness中使用效果.png" alt="DeepSeek Harness 中使用效果" width="480"> |
 | 用 Postman 调试本地 REST API（`/health`、`/execute`） | <img src="screenshot/Postman调用示意.jpg" alt="Postman 调用示意" width="480"> |
 
@@ -109,8 +109,8 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 脚本会把技能包安装到 `%USERPROFILE%\.dsh\skills\bastion-qizhi\`（若设置了 `DSH_HOME` 则用 `DSH_HOME`）。
 DeepSeek Harness 实时监听该目录，**安装后无需重启**：
 
-- 在 DSH 对话中直接输入 `/bastion-qizhi` 唤起技能；
-- 或直接给 AI 派任务（"帮我看看 10.2.1.5 的磁盘使用率"），AI 会自动调用该技能。
+- 在 DSH 对话中直接输入 `/bastion-qizhi` 唤起技能。
+- 该技能不会自动进入模型目录或上下文；只有明确输入斜杠命令时才会加载。
 
 ### 5.2 同时部署桥接器 EXE（从 Release 下载）
 

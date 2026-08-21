@@ -15,7 +15,7 @@
 
 | You are | How you plug in |
 |---|---|
-| 🎯 **DeepSeek Harness user** | One-line install of the skill plugin — your AI gains server-ops ability right away (`/bastion-qizhi`, or just assign it a task like "check disk usage on 10.2.1.5") |
+| 🎯 **DeepSeek Harness user** | Install the skill in one line, then explicitly invoke `/bastion-qizhi` whenever server access is needed |
 | 🌐 **Any AI / agent / script** | The bridge is just a **local RESTful API** (HTTP / SSE / WebSocket) and this README is its API reference — **any AI that can send HTTP requests can use it** (DeepSeek, Claude Code, Cursor, custom agents, curl…), framework-agnostic |
 
 ---
@@ -62,13 +62,13 @@ This project replaces that `putty.exe` with a **dedicated bridge**:
 - ✅ **Idle keep-alive**: sends a harmless command after 60 s of inactivity to prevent bastion disconnects
 - ✅ **Readable console**: colored blocks show sanitized launch fields, connection state, commands, exit codes, and server results
 - ✅ **Secure by default**: loopback-only binding; command/result bodies are previewed only in the live console, never in log files
-- ✅ **DeepSeek Harness skill plugin**: after one-line install, your AI gains "operate servers" ability
+- ✅ **DeepSeek Harness skill plugin**: loads only after `/bastion-qizhi`; it is not injected into model context automatically
 
 ## 3. Screenshots
 
 | Scenario | Screenshot |
 |---|---|
-| Assign a server-ops task in a DeepSeek Harness chat; the AI loads the skill and acts | <img src="screenshot/DeepSeek%20Harness中使用方式.png" alt="Usage in DeepSeek Harness" width="480"> |
+| Type `/bastion-qizhi` in a DeepSeek Harness chat to load the skill explicitly | <img src="screenshot/DeepSeek%20Harness中使用方式.png" alt="Usage in DeepSeek Harness" width="480"> |
 | The AI runs commands on the target server via the bridge API and gets structured results | <img src="screenshot/DeepSeek%20Harness中使用效果.png" alt="Effect in DeepSeek Harness" width="480"> |
 | Debugging the local REST API with Postman (`/health`, `/execute`) | <img src="screenshot/Postman调用示意.jpg" alt="Postman demo" width="480"> |
 
@@ -111,8 +111,8 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 The script installs the skill bundle to `%USERPROFILE%\.dsh\skills\bastion-qizhi\` (or `$DSH_HOME` if set).
 DeepSeek Harness hot-reloads that directory, so the skill works **without a restart**:
 
-- Type `/bastion-qizhi` in a DSH chat to invoke the skill;
-- Or just assign the AI a task ("check disk usage on 10.2.1.5") and it will load the skill automatically.
+- Type `/bastion-qizhi` in a DSH chat to invoke the skill.
+- The skill stays out of model-facing catalogs and context until that explicit slash invocation.
 
 ### 5.2 Also deploy the bridge EXE (download from Release)
 
