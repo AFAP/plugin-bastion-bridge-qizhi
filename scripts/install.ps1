@@ -2,7 +2,7 @@
 #
 # 1. 把仓库中的技能包 skill/bastion-qizhi 安装到 %USERPROFILE%\.dsh\skills\bastion-qizhi
 #    （若设置了 DSH_HOME 环境变量则使用 DSH_HOME）。DeepSeek Harness 实时监听该目录，
-#    安装后无需重启即可在会话中使用 /bastion-qizhi 或让 AI 自动调用。
+#    安装后无需重启即可在会话中使用 /bastion-qizhi 手动调用。
 # 2. 使用 -InstallBridge 时，从 GitHub Release 下载 putty.exe，备份并替换齐治客户端
 #    目录中的原 putty.exe（需要管理员权限时自动弹出 UAC 提权）。
 #
@@ -120,7 +120,7 @@ Write-Host ""
 Write-Host "======== 技能插件安装完成 ========" -ForegroundColor Green
 Write-Host "DeepSeek Harness 已实时加载该技能（无需重启）。使用方法："
 Write-Host "  * 在 DSH 对话中直接输入 /bastion-qizhi 唤起技能；"
-Write-Host "  * 或让 AI 完成与「齐治堡垒机服务器操作」相关的任务，它会自动调用该技能。"
+Write-Host "  * 技能不会自动注入模型上下文，仅支持上述手动调用方式。"
 Write-Host ""
 
 # ---------- 3. 可选：部署桥接器 putty.exe ----------
