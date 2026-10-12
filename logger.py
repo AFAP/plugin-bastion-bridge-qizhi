@@ -100,7 +100,13 @@ class _ConsoleVisibilityFilter(logging.Filter):
 
 
 class _ConsoleFormatter(logging.Formatter):
-    """Readable console formatter with colors for request/response blocks."""
+    """Readable console formatter with colors for request/response blocks.
+
+    Blocks are colored as a whole: the header line（``>>>`` 指令、``<<<`` 返回、
+    ``⛔`` 拒绝）sets the color, and the following ``┌─/├─/└─`` border lines plus
+    content lines inherit it, so a command and its result each read as one
+    visually distinct block.
+    """
 
     _CYAN = "\033[96m"
     _GREEN = "\033[92m"
@@ -112,6 +118,8 @@ class _ConsoleFormatter(logging.Formatter):
     def __init__(self, *args: Any, use_colors: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.use_colors = use_colors
+        # Color inherited by border/content lines of the current block.
+        self._block_color: Optional[str] = None
 
     def format(self, record: logging.LogRecord) -> str:
         # Pretty blocks do not need a timestamp and logger name on every line.
@@ -126,17 +134,37 @@ class _ConsoleFormatter(logging.Formatter):
             return text
 
         message = record.getMessage()
+        first = message.splitlines()[0] if message else ""
         if record.levelno >= logging.ERROR:
-            color = self._RED
-        elif record.levelno >= logging.WARNING or message.startswith("!"):
-            color = self._YELLOW
-        elif message.startswith(">>>"):
+            self._block_color = None
+            return f"{self._RED}{text}{self._RESET}"
+        if record.levelno >= logging.WARNING or first.startswith("!"):
+            self._block_color = None
+            return f"{self._YELLOW}{text}{self._RESET}"
+
+        if first.startswith(">>>"):
             color = self._CYAN
-        elif message.startswith("<<<") or message.startswith("✓"):
+        elif first.startswith("<<<") or first.startswith("✓"):
             color = self._GREEN
-        elif message.startswith(("╔", "║", "╚")):
+        elif first.startswith("⛔"):
+            color = self._RED
+        elif first.startswith(("╔", "║", "╚")):
             color = self._MAGENTA
+        elif first.startswith(("┌", "├", "└")):
+            color = self._block_color
+        elif getattr(record, _CONSOLE_ONLY_ATTR, False):
+            color = self._block_color
         else:
+            color = None
+
+        # Update block state: block headers open a colored block, the startup
+        # banner resets it.
+        if first.startswith((">>>", "<<<", "⛔")):
+            self._block_color = color
+        elif first.startswith(("╔", "║", "╚")):
+            self._block_color = None
+
+        if color is None:
             return text
         return f"{color}{text}{self._RESET}"
 

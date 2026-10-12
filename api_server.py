@@ -36,6 +36,7 @@ from command_guard import (
 from connection import ConnectionParams
 from logger import get_logger, log_blank_line, log_console
 from ssh_client import SSHBridge
+from version import __version__
 
 
 logger = get_logger(__name__)
@@ -227,7 +228,7 @@ class BridgeAPI:
         def health() -> Response:
             connected = self.bridge.is_connected()
             logger.debug("/health requested, connected=%s", connected)
-            return jsonify({"status": "ok", "connected": connected})
+            return jsonify({"status": "ok", "connected": connected, "version": __version__})
 
         @self.app.route("/execute", methods=["POST"])
         def execute() -> Response:

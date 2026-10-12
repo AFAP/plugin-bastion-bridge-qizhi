@@ -47,6 +47,7 @@ from logger import (
 from params import parse_args
 from ssh_client import SSHBridge
 from api_server import start_api
+from version import __version__
 
 
 # Default configuration values.  These are overridden by %LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json.
@@ -159,12 +160,21 @@ def _display_value(value: Any) -> str:
     return str(value)
 
 
+def _banner_row(text: str) -> str:
+    """Pad a banner row to the fixed box width (CJK characters count as 2)."""
+    inner = 58
+    width = sum(2 if ord(ch) > 0xFF else 1 for ch in text)
+    left = (inner - width) // 2
+    return "║" + " " * left + text + " " * (inner - width - left) + "║"
+
+
 def _display_startup(argv: List[str]) -> None:
     """Show the bridge banner and sanitized gateway arguments."""
     log_blank_line()
     log_console("╔══════════════════════════════════════════════════════════╗")
     log_console("║              齐治堡垒机 SSH 桥接器                       ║")
     log_console("║      Qizhi Bastion SSH Bridge · PuTTY 安全桥接模式       ║")
+    log_console(_banner_row(f"版本 v{__version__}"))
     log_console("╚══════════════════════════════════════════════════════════╝")
     log_console(">>> 齐治传入参数（敏感字段已脱敏） | 共 %d 项", len(argv))
     safe_argv = _mask_argv(argv)
@@ -324,6 +334,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logger.info("=" * 60)
     logger.info("Qizhi SSH Bridge (putty.exe replacement) started")
+    logger.info("Bridge version: v%s", __version__)
     logger.info("Python version: %s", sys.version.replace("\n", " "))
     logger.info("Command line argument count: %d", len(argv))
     for idx, arg in enumerate(_mask_argv(argv), start=1):

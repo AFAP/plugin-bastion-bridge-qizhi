@@ -9,6 +9,7 @@ import api_server
 import logger
 import main
 import params
+from version import __version__
 
 
 def _render_calls(mock) -> str:
@@ -94,6 +95,51 @@ class ConsoleDisplayTests(unittest.TestCase):
         self.assertFalse(truncated)
         self.assertNotIn("\x1b", preview)
         self.assertIn("\\x1b[2Jhello\\x00", preview)
+
+    def test_console_formatter_colors_whole_blocks(self):
+        formatter = logger._ConsoleFormatter(use_colors=True)
+
+        def render(message, level=logging.INFO):
+            record = logging.LogRecord("t", level, __file__, 1, message, (), None)
+            setattr(record, logger._CONSOLE_ONLY_ATTR, True)
+            return formatter.format(record)
+
+        # 指令块：标题与边框、正文统一青色
+        self.assertIn(logger._ConsoleFormatter._CYAN, render(">>> 收到服务器指令"))
+        self.assertIn(logger._ConsoleFormatter._CYAN, render("┌─ 指令正文"))
+        self.assertIn(logger._ConsoleFormatter._CYAN, render("rm -rf /data"))
+        self.assertIn(logger._ConsoleFormatter._CYAN, render("└─ 指令结束"))
+        # 返回块：绿色
+        self.assertIn(logger._ConsoleFormatter._GREEN, render("<<< 服务器执行结果"))
+        self.assertIn(logger._ConsoleFormatter._GREEN, render("┌─ stdout（3 字符）"))
+        # 拒绝提示：红色
+        self.assertIn(logger._ConsoleFormatter._RED, render("⛔ 未下发到目标服务器"))
+        self.assertIn(logger._ConsoleFormatter._RED, render("    已返回调用方：提示"))
+        # 横幅：品红，且重置块颜色
+        self.assertIn(logger._ConsoleFormatter._MAGENTA, render("║ 横幅 ║"))
+        self.assertNotIn("\033[", render("┌─ 普通边框"))
+
+    def test_console_formatter_without_colors_returns_plain_text(self):
+        formatter = logger._ConsoleFormatter(use_colors=False)
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, ">>> x", (), None)
+        setattr(record, logger._CONSOLE_ONLY_ATTR, True)
+        self.assertEqual(">>> x", formatter.format(record))
+
+    @patch("main.log_blank_line")
+    @patch("main.log_console")
+    def test_startup_banner_shows_version(self, console, _blank):
+        main._display_startup([])
+
+        displayed = _render_calls(console)
+        self.assertIn(f"v{__version__}", displayed)
+        self.assertIn("版本", displayed)
+
+    def test_health_reports_version(self):
+        api = api_server.BridgeAPI(FakeBridge())
+        response = api.app.test_client().get("/health")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(__version__, response.get_json()["version"])
 
     @patch("api_server.log_blank_line")
     @patch("api_server.log_console")
