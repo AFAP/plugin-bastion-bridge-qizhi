@@ -28,6 +28,9 @@ from typing import Any, Dict, Generator, Optional
 
 import paramiko
 
+# 内部危险操作兜底（纯标准库）。缺失时应直接报错，而不是静默降级为「不拦截」。
+from command_guard import BLOCKED_EXIT_CODE, CommandGuard, GuardDecision, build_blocked_result
+
 # Sibling imports with fallbacks so this file can be syntax-checked standalone.
 try:
     from connection import ConnectionParams
@@ -152,6 +155,7 @@ class SSHBridge:
         keepalive_enabled: bool = True,
         keepalive_interval_seconds: int = 60,
         keepalive_command: str = "ls",
+        command_guard: Optional[CommandGuard] = None,
     ):
         self.params = params
         self._client: Optional[paramiko.SSHClient] = None
@@ -159,6 +163,9 @@ class SSHBridge:
         self._shell: Optional[paramiko.Channel] = None
         self._lock = threading.RLock()
         self._logger = get_logger(__name__)
+
+        # 危险操作兜底：默认启用；这里是 api_server 之外的兜底，保活命令同样受约束。
+        self._command_guard: CommandGuard = command_guard if command_guard is not None else CommandGuard.default()
 
         # Set to True once the server proves it cannot honour exec_command
         # (replies with the login banner only).  From then on commands go
@@ -337,6 +344,16 @@ class SSHBridge:
         """Record that a command was just executed, resetting keep-alive timer."""
         self._last_activity_time = time.time()
 
+    def _guard_decision(self, command: str) -> Optional[GuardDecision]:
+        """Return the guard decision for ``command`` (``None`` means allowed)."""
+        decision = self._command_guard.check(command)
+        if decision is not None:
+            self._logger.warning(
+                "危险操作已拒绝（未下发到服务器）| 命令长度=%d",
+                len(command),
+            )
+        return decision
+
     @staticmethod
     def _drain_channel(channel: paramiko.Channel, max_wait: float = 2.0) -> None:
         """Read and discard any data currently waiting on ``channel``."""
@@ -466,8 +483,15 @@ class SSHBridge:
             stderr: str
             exit_code: int
             error: str   (only present when something went wrong; additive field)
+
+        A refused command is never sent: the result is a normal shape with
+        ``exit_code`` 126 and the prompt in ``stderr``.
         """
         with self._lock:
+            decision = self._guard_decision(command)
+            if decision is not None:
+                return build_blocked_result(decision)
+
             if not self.is_connected():
                 self._logger.error("execute() called while not connected")
                 return {"stdout": "", "stderr": "SSH not connected", "exit_code": -1, "error": "SSH not connected"}
@@ -539,7 +563,16 @@ class SSHBridge:
             {"type": "exit", "exit_code": int}
         The "exit" chunk is an extension to the base contract and can be safely
         ignored by callers that only expect stdout/stderr.
+
+        A refused command yields the prompt as a ``stderr`` chunk plus
+        ``{"type": "exit", "exit_code": 126}`` and is never sent to the server.
         """
+        decision = self._guard_decision(command)
+        if decision is not None:
+            yield {"type": "stderr", "data": decision.message}
+            yield {"type": "exit", "exit_code": BLOCKED_EXIT_CODE}
+            return
+
         if not self.is_connected():
             self._logger.error("stream_execute() called while not connected")
             yield {"type": "stderr", "data": "SSH not connected"}
@@ -598,9 +631,17 @@ class SSHBridge:
         Send data to the persistent interactive shell channel.
 
         This is used by api_server POST /input to drive an interactive session.
-        Returns True if the data was sent, False otherwise.
+        Returns True if the data was sent, False otherwise.  Data that would run
+        a dangerous command is refused (returns False) and never sent.
         """
         with self._lock:
+            if self._command_guard.check_input(data) is not None:
+                self._logger.warning(
+                    "交互输入命中危险操作，已拒绝发送 | 长度=%d",
+                    len(data),
+                )
+                return False
+
             if not self._shell or self._shell.closed:
                 self._logger.warning("send_input() called but no interactive shell is open")
                 return False

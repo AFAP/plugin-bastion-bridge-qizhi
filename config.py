@@ -37,6 +37,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Log rotation.
     "log_max_bytes": 10 * 1024 * 1024,
     "log_backup_count": 5,
+    # 危险操作兜底（内部策略，见 command_guard.py；不写入对外文档）。
+    "dangerous_command_guard_enabled": True,
+    "dangerous_command_guard_message": "",
+    "dangerous_command_guard_programs": [],
+    "dangerous_command_guard_patterns": [],
+    "dangerous_command_guard_allow_patterns": [],
+    "dangerous_command_guard_disabled_rules": [],
     # Live console: show sanitized startup fields and command/result previews.
     # Preview bodies are excluded from bridge.log by logger.py.
     "console_log": True,

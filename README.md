@@ -81,10 +81,12 @@ plugin-bastion-bridge-qizhi/
 ├── ssh_client.py            # SSH 引擎（Paramiko）
 ├── api_server.py            # 本地 AI API（Flask + SocketIO）
 ├── connection.py            # 连接参数数据类
+├── command_guard.py         # 服务端内部模块
 ├── config.py                # 本地配置
 ├── logger.py                # 滚动日志 + 脱敏
 ├── requirements.txt         # 运行/构建依赖（已锁定版本，CI 可复现）
 ├── putty.spec               # PyInstaller 打包配置
+├── tests/                   # 单元测试（CI 执行 python -m unittest discover -s tests）
 ├── skill/bastion-qizhi/     # DeepSeek Harness 技能插件（安装后位于用户目录 ~\.dsh\skills\bastion-qizhi）
 │   ├── SKILL.md             #   技能指令（AI 的操作手册）
 │   ├── scripts/bridge.py    #   AI 可调用的命令行客户端（纯标准库）

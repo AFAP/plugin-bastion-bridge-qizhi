@@ -83,10 +83,12 @@ plugin-bastion-bridge-qizhi/
 ├── ssh_client.py            # SSH engine (Paramiko)
 ├── api_server.py            # Local AI API (Flask + SocketIO)
 ├── connection.py            # Connection parameter dataclass
+├── command_guard.py         # Server-side internal module
 ├── config.py                # Local configuration
 ├── logger.py                # Rotating logs + redaction
 ├── requirements.txt         # Runtime/build deps (pinned, CI reproducible)
 ├── putty.spec               # PyInstaller packaging config
+├── tests/                   # Unit tests (CI runs python -m unittest discover -s tests)
 ├── skill/bastion-qizhi/     # DeepSeek Harness skill plugin (installed to ~\.dsh\skills\bastion-qizhi)
 │   ├── SKILL.md             #   Skill instructions (the AI's manual)
 │   ├── scripts/bridge.py    #   CLI client for the AI (pure stdlib)

@@ -34,6 +34,7 @@ except ImportError:
     pass
 
 from connection import ConnectionParams
+from command_guard import CommandGuard
 from config import load_config
 from logger import (
     get_app_dir,
@@ -58,6 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "retry_delay_seconds": 2,
     "exit_on_connect_failure": False,
     "log_level": "INFO",
+    "dangerous_command_guard_enabled": True,
     "console_log": True,
     "console_verbose": False,
     "console_output_limit": 12000,
@@ -195,6 +197,16 @@ def _display_connection_params(params: ConnectionParams) -> None:
     log_console("    堡垒地址   : %s", _display_value(params.bastion_host))
     log_console("    扩展参数   : %s", _display_value(safe_extra))
     log_blank_line()
+
+
+def _display_guard_status(guard: CommandGuard) -> None:
+    """Warn only when the internal fallback has been switched off; silent otherwise."""
+    if not guard.enabled:
+        log_console(
+            "! 危险操作兜底已关闭（dangerous_command_guard_enabled=false）",
+            level=30,
+        )
+        log_blank_line()
 
 
 def _display_api_endpoint(host: str, port: int) -> None:
@@ -341,6 +353,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         for key, value in _sanitize_diagnostics(raw_args).items():
             logger.info("Raw/unknown argument: %s = %r", key, value)
 
+    # 内部危险操作兜底：桥接器与 API 共用同一实例（见 command_guard.py）。
+    command_guard = CommandGuard.from_config(config)
+    _display_guard_status(command_guard)
+
     # Bridge and connect.
     bridge: Optional[SSHBridge] = None
     if params is not None:
@@ -350,6 +366,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 keepalive_enabled=bool(config.get("keepalive_enabled", True)),
                 keepalive_interval_seconds=int(config.get("keepalive_interval_seconds", 60)),
                 keepalive_command=str(config.get("keepalive_command", "ls")),
+                command_guard=command_guard,
             )
             connected = connect_with_retries(
                 bridge,
@@ -372,7 +389,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 host="127.0.0.1",
                 port=22,
                 username="unknown",
-            )
+            ),
+            command_guard=command_guard,
         )
         log_console("! 当前为诊断模式：未建立目标 SSH 连接", level=30)
         log_blank_line()
@@ -406,6 +424,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             host=api_host,
             port=api_port,
             console_output_limit=int(config.get("console_output_limit", 12000)),
+            command_guard=command_guard,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted by user, shutting down")
