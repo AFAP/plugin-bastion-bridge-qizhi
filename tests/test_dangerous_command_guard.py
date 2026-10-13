@@ -68,7 +68,9 @@ class GuardMatchingTests(unittest.TestCase):
             "wipefs -a /dev/sdb": "disk",
             "shutdown -h now": "power",
             "reboot": "power",
-            "systemctl reboot": "service",
+            "systemctl reboot": "power",
+            "sudo systemctl poweroff": "power",
+            "systemctl isolate rescue.target": "power",
         }
         for command, rule in cases.items():
             with self.subTest(command=command):
@@ -76,11 +78,8 @@ class GuardMatchingTests(unittest.TestCase):
                 self.assertIsNotNone(decision, f"未拦截：{command}")
                 self.assertEqual(rule, decision.rule)
 
-    def test_blocks_service_kill_account_and_firewall_changes(self):
+    def test_blocks_kill_account_and_firewall_changes(self):
         cases = {
-            "systemctl stop nginx": "service",
-            "systemctl --user restart app": "service",
-            "service nginx stop": "service",
             "kill -9 1234": "kill",
             "pkill -f java": "kill",
             "iptables -F": "firewall",
@@ -90,8 +89,6 @@ class GuardMatchingTests(unittest.TestCase):
             "crontab -r": "schedule",
             "umount /data": "unmount",
             "truncate -s 0 /var/log/syslog": "truncate",
-            "docker rm -f web": "container",
-            "docker compose down": "container",
             "kubectl delete pod web-0": "delete",
         }
         for command, rule in cases.items():
@@ -139,6 +136,16 @@ class GuardMatchingTests(unittest.TestCase):
             "tar -czf /tmp/backup.tar.gz /etc",
             "scp /tmp/a.txt prod:/tmp/",
             "find /data -name '*.log' -mtime +7",
+            # 服务与容器生命周期操作是日常自动化，不拦
+            "sudo systemctl restart server-aiassistant-compose.service",
+            "systemctl stop nginx",
+            "systemctl start nginx",
+            "systemctl disable nginx",
+            "service nginx restart",
+            "docker compose restart",
+            "docker compose down",
+            "docker rm -f web",
+            "docker stop web && docker start web",
         ]
         for command in allowed:
             with self.subTest(command=command):

@@ -6,9 +6,9 @@
 **对外只暴露一句话**：响应与普通执行结果同形（``stdout``/``stderr``/``exit_code``，
 其中 ``exit_code`` 为 126），不返回规则名、原因等内部策略信息——规则细节只留在本模块。
 
-纯标准库实现，可被 ``ssh_client`` 与 ``api_server`` 共用。三类规则互补：
+纯标准库实现，可被 ``ssh_client`` 与 ``api_server`` 共用。两类规则互补：
 程序名（解析出真正执行的程序后比对，``sudo rm``、``sh -c "rm"`` 都能识别）、
-子命令（``systemctl stop``，不误伤 ``systemctl status``）、整条命令正则（裸设备重定向、fork 炸弹等）。
+整条命令正则（裸设备重定向、fork 炸弹等无法用程序名表达的特征）。
 
 尽力而为的字面特征兜底，不是沙箱；安全边界仍是操作授权与堡垒机审计。
 可配置项见 ``config.py``（``dangerous_command_guard_*``，只在源码中说明，不写入对外文档）。
@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Pattern, Sequence, Tuple
 
 logger = logging.getLogger("QizhiSSHBridge.command_guard")
@@ -47,29 +47,16 @@ class DangerousRule:
         description: 中文说明（仅内部使用）。
         programs: 程序名正则（对程序 basename 做 ``fullmatch``）。
         patterns: 整条命令正则（对原命令做 ``search``）。
-        subcommands: 仅当命令中出现这些子命令之一时才拦截。
-        subcommand_match: ``first`` 只看程序后第一个非选项参数，``any`` 检查所有非选项参数。
     """
 
     name: str
     description: str
     programs: Tuple[Pattern[str], ...] = ()
     patterns: Tuple[Pattern[str], ...] = ()
-    subcommands: Tuple[str, ...] = field(default_factory=tuple)
-    subcommand_match: str = "first"
 
     def matches_program(self, name: str) -> bool:
         """程序 basename 是否命中本规则的程序名正则。"""
         return bool(name) and any(pattern.fullmatch(name) for pattern in self.programs)
-
-    def matches_subcommand(self, tokens: Sequence[str]) -> bool:
-        """命令中是否出现被拦截的子命令。"""
-        positional = [token for token in tokens if not token.startswith("-")]
-        if not positional:
-            return False
-        if self.subcommand_match == "any":
-            return any(token in self.subcommands for token in positional)
-        return positional[0] in self.subcommands
 
 
 def _compile(*expressions: str) -> Tuple[Pattern[str], ...]:
@@ -132,43 +119,15 @@ _DEFAULT_RULES: Tuple[DangerousRule, ...] = (
         "power",
         "关机 / 重启 / 停机",
         programs=_compile(r"shutdown", r"reboot", r"halt", r"poweroff", r"telinit", r"init"),
+        patterns=_compile(
+            # systemctl 的整机动作会断开会话本身；服务的 start/stop/restart 不拦。
+            r"\bsystemctl\b[^\n]*\s(?:reboot|poweroff|halt|isolate|emergency|rescue|kexec)(?:\s|$)",
+        ),
     ),
     DangerousRule(
         "kill",
         "结束进程",
         programs=_compile(r"kill", r"killall", r"killall5", r"pkill", r"fuser"),
-    ),
-    DangerousRule(
-        "service",
-        "停止 / 禁用服务",
-        programs=_compile(r"systemctl", r"service"),
-        subcommands=(
-            "stop",
-            "restart",
-            "disable",
-            "mask",
-            "kill",
-            "isolate",
-            "poweroff",
-            "reboot",
-            "halt",
-            "emergency",
-            "rescue",
-            "daemon-reexec",
-            "set-property",
-        ),
-        subcommand_match="any",
-    ),
-    DangerousRule(
-        "container",
-        "停止 / 删除容器",
-        programs=_compile(r"docker", r"podman", r"nerdctl"),
-        subcommands=("rm", "rmi", "kill", "stop", "restart", "prune", "down", "pause"),
-        subcommand_match="any",
-        patterns=_compile(
-            r"\b(?:docker|podman|nerdctl)\s+volume\s+rm\b",
-            r"\b(?:docker|podman|nerdctl)\b[^\n]*\bcompose\b[^\n]*\b(?:down|rm)\b",
-        ),
     ),
     DangerousRule(
         "firewall",
@@ -548,15 +507,10 @@ class CommandGuard:
         program = _basename(tokens[index])
         rest = list(tokens[index + 1:])
 
-        # 1) 程序本身 + 子命令
+        # 1) 程序本身
         for rule in self.rules:
-            if not rule.matches_program(program):
-                continue
-            if rule.subcommands:
-                if rule.matches_subcommand(rest):
-                    return self._build_decision(rule)
-                continue
-            return self._build_decision(rule)
+            if rule.matches_program(program):
+                return self._build_decision(rule)
 
         # 2) 程序以字符串形式再执行一次命令（sh -c / eval / xargs / find -exec）
         decision = self._scan_inline_program(program, rest, depth)
