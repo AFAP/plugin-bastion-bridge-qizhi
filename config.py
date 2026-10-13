@@ -32,7 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_level": "INFO",
     # Keep-alive: send a harmless command if idle to prevent bastion timeout.
     "keepalive_enabled": True,
-    "keepalive_interval_seconds": 60,
+    "keepalive_interval_seconds": 180,
     "keepalive_command": "ls",
     # Log rotation.
     "log_max_bytes": 10 * 1024 * 1024,

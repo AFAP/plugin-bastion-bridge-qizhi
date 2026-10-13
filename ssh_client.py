@@ -153,7 +153,7 @@ class SSHBridge:
         self,
         params: ConnectionParams,
         keepalive_enabled: bool = True,
-        keepalive_interval_seconds: int = 60,
+        keepalive_interval_seconds: int = 180,
         keepalive_command: str = "ls",
         command_guard: Optional[CommandGuard] = None,
     ):
@@ -182,6 +182,9 @@ class SSHBridge:
         self._last_activity_time = time.time()
         self._keepalive_thread: Optional[threading.Thread] = None
         self._keepalive_stop_event = threading.Event()
+        # 正在执行中的指令数（>0 时保活顺延，避免打扰长任务或与在飞指令争抢通道）。
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
 
         self._logger.info(
             "SSHBridge initialized: target=%s@%s:%s protocol=%s bastion=%s "
@@ -314,20 +317,21 @@ class SSHBridge:
         self._keepalive_thread = None
 
     def _keepalive_loop(self) -> None:
-        """Periodically send a harmless command if the connection is idle."""
+        """空闲满间隔时发无害命令保活；有指令在执行（含已下发未返回的长任务）则顺延。"""
         while not self._keepalive_stop_event.is_set():
             # Wake up every second to check for shutdown.
             self._keepalive_stop_event.wait(1)
             if self._keepalive_stop_event.is_set():
                 break
 
-            elapsed = time.time() - self._last_activity_time
-            if elapsed < self._keepalive_interval_seconds:
-                continue
-            if not self.is_connected():
-                self._logger.debug("Keep-alive skipped: not connected")
+            if not self._keepalive_due():
+                if self._is_busy():
+                    self._logger.debug("保活顺延：有指令正在执行")
+                elif not self.is_connected():
+                    self._logger.debug("Keep-alive skipped: not connected")
                 continue
 
+            elapsed = time.time() - self._last_activity_time
             self._logger.info(
                 "No activity for %.0fs; sending keep-alive command (length=%d)",
                 elapsed,
@@ -343,6 +347,31 @@ class SSHBridge:
     def _bump_activity(self) -> None:
         """Record that a command was just executed, resetting keep-alive timer."""
         self._last_activity_time = time.time()
+
+    def _mark_busy(self) -> None:
+        """记录一条指令开始执行。"""
+        with self._inflight_lock:
+            self._inflight += 1
+
+    def _mark_idle(self) -> None:
+        """记录一条指令执行完毕，并把空闲计时重置到此刻。"""
+        with self._inflight_lock:
+            self._inflight = max(0, self._inflight - 1)
+        self._bump_activity()
+
+    def _is_busy(self) -> bool:
+        """是否有指令正在执行。"""
+        with self._inflight_lock:
+            return self._inflight > 0
+
+    def _keepalive_due(self) -> bool:
+        """是否该发保活指令：空闲满间隔、已连接、且没有指令在执行。"""
+        return (
+            self._keepalive_enabled
+            and self.is_connected()
+            and not self._is_busy()
+            and (time.time() - self._last_activity_time) >= self._keepalive_interval_seconds
+        )
 
     def _guard_decision(self, command: str) -> Optional[GuardDecision]:
         """Return the guard decision for ``command`` (``None`` means allowed)."""
@@ -496,6 +525,7 @@ class SSHBridge:
                 self._logger.error("execute() called while not connected")
                 return {"stdout": "", "stderr": "SSH not connected", "exit_code": -1, "error": "SSH not connected"}
 
+            self._mark_busy()
             try:
                 self._bump_activity()
                 self._logger.info("Executing command (length=%d)", len(command))
@@ -551,6 +581,8 @@ class SSHBridge:
                 self._logger.error("Command execution failed: %s", exc, exc_info=True)
                 self._logger.warning("Retrying command via interactive shell")
                 return self._execute_via_shell(command, timeout=timeout)
+            finally:
+                self._mark_idle()
 
     def stream_execute(self, command: str) -> Generator[Dict[str, Any], None, None]:
         """
@@ -579,6 +611,7 @@ class SSHBridge:
             return
 
         channel: Optional[paramiko.Channel] = None
+        self._mark_busy()
         try:
             self._bump_activity()
             self._logger.info("Streaming command (length=%d)", len(command))
@@ -620,6 +653,7 @@ class SSHBridge:
             self._logger.error("Stream execution failed: %s", exc, exc_info=True)
             yield {"type": "stderr", "data": f"Stream error: {exc}"}
         finally:
+            self._mark_idle()
             if channel is not None:
                 try:
                     channel.close()

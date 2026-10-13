@@ -26,7 +26,7 @@
 - `Parsing argv:` —— 堡垒机实际传参（密码已脱敏），适配新版本齐治时以此为准。
 - `SSH connected successfully` / `SSH connect attempt N failed` —— 连接过程。
 - 命令长度、退出码与 stdout/stderr 字符数 —— 每条命令的元数据。
-- `Keep-alive` —— 空闲保活记录（默认每 60 秒执行一次无害命令）。
+- `Keep-alive` —— 空闲保活记录（默认空闲 3 分钟执行一次无害命令，有指令在执行时顺延）。
 
 ## 配置文件
 
@@ -43,7 +43,7 @@
 | `ssh_connect_timeout` | `15` | SSH 握手超时 |
 | `retry_max_attempts` | `3` | 连接失败重试次数 |
 | `keepalive_enabled` | `true` | 空闲保活开关 |
-| `keepalive_interval_seconds` | `60` | 空闲多久触发保活 |
+| `keepalive_interval_seconds` | `180` | 空闲多久触发保活（有指令在执行时顺延） |
 | `keepalive_command` | `ls` | 保活命令，须无害 |
 | `log_level` | `INFO` | DEBUG/INFO/WARNING/ERROR |
 

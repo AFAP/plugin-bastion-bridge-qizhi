@@ -57,7 +57,7 @@
 - ✅ **双通道执行**：优先 `exec_command`，自动降级交互 shell，适配只允许 PTY 的受限服务器
 - ✅ **完整 API**：`/health`、`/execute`、`/stream`(SSE)、`/input`、`/ws`(Socket.IO)
 - ✅ **端口自动发现**：实际监听地址写入 `active_port.txt`，AI 免配置直接读取
-- ✅ **空闲保活**：默认 60 秒无命令自动发无害命令，防止堡垒机断连
+- ✅ **空闲保活**：默认空闲 3 分钟自动发无害命令防止断连；有指令在执行中（含长任务等返回）时自动顺延，不打扰
 - ✅ **直观控制台**：彩色展示脱敏后的启动参数、连接状态、收到的指令、退出码与服务器返回
 - ✅ **安全默认**：仅监听 `127.0.0.1`；命令与返回正文只在当前控制台预览，不写入日志文件
 - ✅ **DeepSeek Harness 技能插件**：仅在输入 `/bastion-qizhi` 时加载，不自动注入模型上下文
@@ -207,7 +207,7 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `ssh_connect_timeout` | `15` | SSH 握手超时（秒） |
 | `retry_max_attempts` | `3` | 连接失败重试次数 |
 | `keepalive_enabled` | `true` | 空闲保活开关 |
-| `keepalive_interval_seconds` | `60` | 空闲多久触发保活 |
+| `keepalive_interval_seconds` | `180` | 空闲多久触发保活（有指令在执行时顺延） |
 | `keepalive_command` | `ls` | 保活命令（须无害） |
 | `log_level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `log_max_bytes` | `10485760` | 单日志文件上限（10MB） |

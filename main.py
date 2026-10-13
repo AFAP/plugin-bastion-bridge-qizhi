@@ -375,7 +375,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             bridge = SSHBridge(
                 params,
                 keepalive_enabled=bool(config.get("keepalive_enabled", True)),
-                keepalive_interval_seconds=int(config.get("keepalive_interval_seconds", 60)),
+                keepalive_interval_seconds=int(config.get("keepalive_interval_seconds", 180)),
                 keepalive_command=str(config.get("keepalive_command", "ls")),
                 command_guard=command_guard,
             )

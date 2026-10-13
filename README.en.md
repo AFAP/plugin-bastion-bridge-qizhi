@@ -59,7 +59,7 @@ This project replaces that `putty.exe` with a **dedicated bridge**:
 - ✅ **Dual-channel execution**: prefers `exec_command`, auto-falls back to an interactive shell for PTY-only restricted servers
 - ✅ **Full API**: `/health`, `/execute`, `/stream` (SSE), `/input`, `/ws` (Socket.IO)
 - ✅ **Auto port discovery**: live endpoint written to `active_port.txt`, AI reads it with zero config
-- ✅ **Idle keep-alive**: sends a harmless command after 60 s of inactivity to prevent bastion disconnects
+- ✅ **Idle keep-alive**: sends a harmless command after 3 min of inactivity to prevent bastion disconnects; automatically deferred while a command is still running
 - ✅ **Readable console**: colored blocks show sanitized launch fields, connection state, commands, exit codes, and server results
 - ✅ **Secure by default**: loopback-only binding; command/result bodies are previewed only in the live console, never in log files
 - ✅ **DeepSeek Harness skill plugin**: loads only after `/bastion-qizhi`; it is not injected into model context automatically
@@ -209,7 +209,7 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 | `ssh_connect_timeout` | `15` | SSH handshake timeout (s) |
 | `retry_max_attempts` | `3` | Connect retries on failure |
 | `keepalive_enabled` | `true` | Idle keep-alive switch |
-| `keepalive_interval_seconds` | `60` | Idle time before keep-alive fires |
+| `keepalive_interval_seconds` | `180` | Idle seconds before keep-alive fires (deferred while a command is running) |
 | `keepalive_command` | `ls` | Keep-alive command (must be harmless) |
 | `log_level` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `log_max_bytes` | `10485760` | Max log file size (10 MB) |
