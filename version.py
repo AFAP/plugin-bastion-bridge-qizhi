@@ -5,7 +5,7 @@
 版本与 Release 一致。发新版本时先改这里、再打同名 tag。
 """
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 #: 该桥接器适配的堡垒机客户端与传参风格（启动横幅展示用）。
 BASTION_CLIENT = "齐治 AccessClient"

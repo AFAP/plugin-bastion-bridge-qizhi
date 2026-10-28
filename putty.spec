@@ -18,6 +18,19 @@ Or simply run ``build.bat`` which handles the virtual environment and build.
 
 from PyInstaller.building.build_main import Analysis, PYZ, EXE
 
+import sys
+from pathlib import Path
+
+# Generate the Windows VERSIONINFO resource from version.py before building.
+# Without EXE(version=...), Explorer shows no file version / product name.
+SPEC_DIR = Path(SPECPATH)
+sys.path.insert(0, str(SPEC_DIR))
+from version import __version__  # noqa: E402
+from build_version_info import write_version_info  # noqa: E402
+
+VERSION_INFO_PATH = SPEC_DIR / "version_info.txt"
+write_version_info(VERSION_INFO_PATH, __version__)
+
 block_cipher = None
 
 
@@ -82,6 +95,7 @@ exe = EXE(
     analysis.datas,
     [],
     name="putty",
+    version=str(VERSION_INFO_PATH),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -25,6 +25,8 @@ build.log
 rebuild.log
 *.log
 *.spec.bak
+# 由 putty.spec 从 version.py 生成的 Windows VERSIONINFO 资源
+version_info.txt
 
 # IDE
 .vscode/

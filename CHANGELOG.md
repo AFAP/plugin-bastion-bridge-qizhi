@@ -1,5 +1,12 @@
 # 更新记录
 
+## v1.5.1（2026-10-28）
+
+### 修复
+
+- 为 `putty.exe` 补充 Windows VERSIONINFO 资源：文件说明、文件版本、产品名称、产品版本、版权、原始文件名等现在会显示在“属性 → 详细信息”中。
+- VERSIONINFO 由 `version.py` 在打包时自动生成（`build_version_info.py` + `putty.spec`），本地构建与 GitHub tag 构建的版本号始终一致。
+
 ## v1.5.0（2026-10-28）
 
 ### 主要变化
