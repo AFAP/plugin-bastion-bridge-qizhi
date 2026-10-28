@@ -16,6 +16,7 @@ to explain what happened.
 from __future__ import annotations
 
 import json
+import platform
 import re
 import socket
 import sys
@@ -38,6 +39,7 @@ from command_guard import CommandGuard
 from config import load_config
 from logger import (
     get_app_dir,
+    get_config_path,
     get_log_path,
     get_logger,
     log_blank_line,
@@ -47,7 +49,7 @@ from logger import (
 from params import parse_args
 from ssh_client import SSHBridge
 from api_server import start_api
-from version import __version__
+from version import __version__, version_lines
 
 
 # Default configuration values.  These are overridden by %LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json.
@@ -60,6 +62,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "retry_delay_seconds": 2,
     "exit_on_connect_failure": False,
     "log_level": "INFO",
+    "ssh_prefer_shell": True,
     "dangerous_command_guard_enabled": True,
     "console_log": True,
     "console_verbose": False,
@@ -160,22 +163,15 @@ def _display_value(value: Any) -> str:
     return str(value)
 
 
-def _banner_row(text: str) -> str:
-    """Pad a banner row to the fixed box width (CJK characters count as 2)."""
-    inner = 58
-    width = sum(2 if ord(ch) > 0xFF else 1 for ch in text)
-    left = (inner - width) // 2
-    return "║" + " " * left + text + " " * (inner - width - left) + "║"
-
-
 def _display_startup(argv: List[str]) -> None:
-    """Show the bridge banner and sanitized gateway arguments."""
+    """Show the bridge banner, version block and sanitized gateway arguments."""
     log_blank_line()
     log_console("╔══════════════════════════════════════════════════════════╗")
     log_console("║              齐治堡垒机 SSH 桥接器                       ║")
     log_console("║      Qizhi Bastion SSH Bridge · PuTTY 安全桥接模式       ║")
-    log_console(_banner_row(f"版本 v{__version__}"))
     log_console("╚══════════════════════════════════════════════════════════╝")
+    for line in version_lines():
+        log_console("    %s", line)
     log_console(">>> 齐治传入参数（敏感字段已脱敏） | 共 %d 项", len(argv))
     safe_argv = _mask_argv(argv)
     if not safe_argv:
@@ -183,6 +179,31 @@ def _display_startup(argv: List[str]) -> None:
     else:
         for index, value in enumerate(safe_argv, start=1):
             log_console("    [%02d] %s", index, value)
+    log_blank_line()
+
+
+def _display_runtime_config(config: Dict[str, Any], guard: CommandGuard) -> None:
+    """Show the effective runtime settings (never credentials or command bodies)."""
+    keepalive_enabled = bool(config.get("keepalive_enabled", True))
+    keepalive_command = str(config.get("keepalive_command", "ls"))
+    prefer_shell = bool(config.get("ssh_prefer_shell", True))
+    log_console(">>> 运行配置")
+    log_console("    运行环境   : Python %s / %s", platform.python_version(), platform.platform())
+    log_console("    指令通道   : %s", "交互 Shell（默认）" if prefer_shell else "exec 通道")
+    log_console(
+        "    空闲保活   : %s | 间隔 %s 秒 | 命令长度 %d",
+        "开启" if keepalive_enabled else "关闭",
+        config.get("keepalive_interval_seconds", 180),
+        len(keepalive_command),
+    )
+    log_console(
+        "    控制台预览 : %s 字符 | 详细日志 %s",
+        config.get("console_output_limit", 12000),
+        "开启" if config.get("console_verbose", False) else "关闭",
+    )
+    log_console("    危险操作   : 兜底%s", "开启" if guard.enabled else "关闭")
+    log_console("    配置文件   : %s", get_config_path())
+    log_console("    文件日志   : %s", get_log_path())
     log_blank_line()
 
 
@@ -209,16 +230,6 @@ def _display_connection_params(params: ConnectionParams) -> None:
     log_blank_line()
 
 
-def _display_guard_status(guard: CommandGuard) -> None:
-    """Warn only when the internal fallback has been switched off; silent otherwise."""
-    if not guard.enabled:
-        log_console(
-            "! 危险操作兜底已关闭（dangerous_command_guard_enabled=false）",
-            level=30,
-        )
-        log_blank_line()
-
-
 def _display_api_endpoint(host: str, port: int) -> None:
     """Show the local endpoint and useful discovery locations."""
     endpoint = f"http://{host}:{port}"
@@ -226,7 +237,6 @@ def _display_api_endpoint(host: str, port: int) -> None:
     log_console("    服务地址   : %s", endpoint)
     log_console("    健康检查   : %s/health", endpoint)
     log_console("    端口文件   : %s", get_app_dir() / "active_port.txt")
-    log_console("    文件日志   : %s", get_log_path())
     log_console("    当前状态   : 等待 AI 或脚本发送指令")
     log_blank_line()
 
@@ -316,7 +326,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
 
     # Load config before setting up logging because it may contain log_level.
-    user_config = load_config()
+    # A broken config must not kill the process before anything is displayed:
+    # fall back to defaults and say so on stderr.
+    try:
+        user_config = load_config()
+    except Exception as exc:  # noqa: BLE001 - startup must survive a bad config
+        sys.stderr.write(f"[QizhiSSHBridge] 配置加载失败，改用默认配置：{exc}\n")
+        user_config = {}
     config = merge_config(user_config)
 
     # Initialize logging to %LOCALAPPDATA%\sshbridge\QizhiSSHBridge\logs\bridge.log.
@@ -337,6 +353,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     logger.info("Bridge version: v%s", __version__)
     logger.info("Python version: %s", sys.version.replace("\n", " "))
     logger.info("Command line argument count: %d", len(argv))
+    logger.info(
+        "Runtime config: channel=%s prefer_shell=%s keepalive=%s interval=%ss "
+        "console_verbose=%s output_limit=%s",
+        "shell" if config.get("ssh_prefer_shell", True) else "exec",
+        config.get("ssh_prefer_shell", True),
+        config.get("keepalive_enabled", True),
+        config.get("keepalive_interval_seconds", 180),
+        config.get("console_verbose", False),
+        config.get("console_output_limit", 12000),
+    )
     for idx, arg in enumerate(_mask_argv(argv), start=1):
         logger.info("  argv[%d] = %r", idx, arg)
 
@@ -366,7 +392,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 内部危险操作兜底：桥接器与 API 共用同一实例（见 command_guard.py）。
     command_guard = CommandGuard.from_config(config)
-    _display_guard_status(command_guard)
+    _display_runtime_config(config, command_guard)
 
     # Bridge and connect.
     bridge: Optional[SSHBridge] = None
@@ -378,6 +404,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 keepalive_interval_seconds=int(config.get("keepalive_interval_seconds", 180)),
                 keepalive_command=str(config.get("keepalive_command", "ls")),
                 command_guard=command_guard,
+                prefer_shell=bool(config.get("ssh_prefer_shell", True)),
             )
             connected = connect_with_retries(
                 bridge,

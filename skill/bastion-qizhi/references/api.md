@@ -33,6 +33,7 @@ Content-Type: application/json
 
 - `timeout` 可选，默认 30 秒，单位秒。
 - `exit_code`：`0` 成功；非 `0` 失败（结合 `stderr`）；`-1` SSH 未连接或执行异常。
+- 默认走交互 shell（PTY），此时 `stderr` 合并进 `stdout`（`stderr` 为空字符串），退出码仍是命令本身的 `$?`；需要区分两路输出时可让桥接器使用 exec 通道（配置 `ssh_prefer_shell=false`）。
 - 400：`command` 缺失或非法；500：执行异常（含 `error`/`detail`/`exception_type`）。
 
 ## 3. 流式输出（SSE）
@@ -59,8 +60,8 @@ Content-Type: application/json
 { "data": "y\n" }
 ```
 
-数据发送到桥接器维护的持久交互 shell 通道（PTY）。成功返回 `{"status": "ok", ...}`，
-shell 不可用时返回 503。
+数据发送到桥接器维护的持久交互 shell 通道（PTY），命令执行期间也可以发送（用于 `read`、
+`sudo` 密码等交互应答）。成功返回 `{"status": "ok", ...}`，shell 不可用时返回 503。
 
 ## 5. WebSocket（Socket.IO）
 

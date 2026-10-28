@@ -8,6 +8,7 @@ needing administrator privileges or modifying its own installation directory.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -34,6 +35,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "keepalive_enabled": True,
     "keepalive_interval_seconds": 180,
     "keepalive_command": "ls",
+    # 指令通道：齐治接入客户端经本地端口转发时 exec 往往只回登录横幅，
+    # 默认走持久交互 shell；个别环境可改为 false 使用 exec 通道。
+    "ssh_prefer_shell": True,
     # Log rotation.
     "log_max_bytes": 10 * 1024 * 1024,
     "log_backup_count": 5,
@@ -53,9 +57,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 def _expand_env(value: Any) -> Any:
-    """Recursively expand ``%VAR%`` style environment variables in strings."""
+    """Recursively expand ``%VAR%`` style environment variables in strings.
+
+    Only string values that actually contain ``%`` are touched, and the result
+    stays a plain string: ``os.path.expandvars`` is the right tool here.
+    ``pathlib.Path`` has no ``expandvars`` method, and converting arbitrary
+    config values (commands, regexes, log messages) into ``Path`` objects
+    would both crash on ``%`` and rewrite Windows path separators.
+    """
     if isinstance(value, str):
-        return Path(value).expandvars().as_posix() if "%" in value else value
+        return os.path.expandvars(value) if "%" in value else value
     if isinstance(value, dict):
         return {k: _expand_env(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -73,7 +84,7 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     Returns:
         A dictionary with defaults merged with user-supplied settings.
     """
-    path = config_path or get_config_path()
+    path = Path(config_path) if config_path else get_config_path()
     config = DEFAULT_CONFIG.copy()
 
     if path.exists():
@@ -116,7 +127,7 @@ def save_config(config: Dict[str, Any], config_path: Optional[Path] = None) -> b
     Returns:
         ``True`` on success, ``False`` otherwise.
     """
-    path = config_path or get_config_path()
+    path = Path(config_path) if config_path else get_config_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:

@@ -56,11 +56,11 @@ This project replaces that `putty.exe` with a **dedicated bridge**:
 - ✅ **Single EXE, no install**: PyInstaller one-file build; just replace the original `putty.exe`, no admin rights needed to run
 - ✅ **Qizhi argument compatible**: supports explicit PuTTY args and `-load` temp session files (`\`, `=`, `:` formats auto-parsed)
 - ✅ **Legacy servers supported**: built-in legacy KEX/cipher/MAC algorithms (`group14-sha1`, `3des-cbc`, `hmac-sha1`, …)
-- ✅ **Dual-channel execution**: prefers `exec_command`, auto-falls back to an interactive shell for PTY-only restricted servers
+- ✅ **Interactive shell by default**: the Qizhi access client often returns only a login banner for `exec_command` over its local port forward, so the bridge uses the persistent PTY shell; set `ssh_prefer_shell=false` to use the exec channel instead
 - ✅ **Full API**: `/health`, `/execute`, `/stream` (SSE), `/input`, `/ws` (Socket.IO)
 - ✅ **Auto port discovery**: live endpoint written to `active_port.txt`, AI reads it with zero config
 - ✅ **Idle keep-alive**: sends a harmless command after 3 min of inactivity to prevent bastion disconnects; automatically deferred while a command is still running
-- ✅ **Readable console**: colored blocks show sanitized launch fields, connection state, commands, exit codes, and server results
+- ✅ **Readable console**: colored headlines and clear blocks show sanitized launch fields, version, runtime config, connection state, commands, exit codes, and server results
 - ✅ **Secure by default**: loopback-only binding; command/result bodies are previewed only in the live console, never in log files
 - ✅ **DeepSeek Harness skill plugin**: loads only after `/bastion-qizhi`; it is not injected into model context automatically
 
@@ -208,6 +208,7 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 | `api_port` | `8766` | Auto-increments to 8767, 8768… if busy |
 | `ssh_connect_timeout` | `15` | SSH handshake timeout (s) |
 | `retry_max_attempts` | `3` | Connect retries on failure |
+| `ssh_prefer_shell` | `true` | Use the persistent interactive shell; set `false` for the exec channel (server must support it) |
 | `keepalive_enabled` | `true` | Idle keep-alive switch |
 | `keepalive_interval_seconds` | `180` | Idle seconds before keep-alive fires (deferred while a command is running) |
 | `keepalive_command` | `ls` | Keep-alive command (must be harmless) |
@@ -217,6 +218,11 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 | `console_log` | `true` | Show colored status, command, and response previews in the console |
 | `console_verbose` | `false` | Also show detailed INFO/DEBUG technical records in the console |
 | `console_output_limit` | `12000` | Per-command or output-field preview limit; full API responses are unaffected |
+
+> Channel note: with the default `ssh_prefer_shell=true`, commands run in a PTY shell, so `stderr`
+> is merged into `stdout` (the JSON `stderr` field is empty); the exit code still comes from the
+> command's own `$?`. Set `ssh_prefer_shell=false` if you need separate streams and the server
+> supports `exec_command`.
 
 ## 9. Logs & troubleshooting
 

@@ -14,12 +14,13 @@
 
 退出码：
     0   请求成功（exec 时表示目标命令 exit_code == 0）
-    1   目标命令执行失败（exec 且桥接器返回非 0 exit_code）
+    1   目标命令执行失败；流式执行未收到明确 exit=0（服务端 error、断连、无退出码）
     2   桥接器不可达 / 端口文件缺失 / HTTP 错误
     3   本地参数错误
 """
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -112,14 +113,15 @@ def cmd_exec(args: argparse.Namespace) -> int:
     url = f"http://{base}/execute"
     try:
         status, body = http_json(url, {"command": args.command, "timeout": args.timeout}, timeout=args.timeout)
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         return fail(f"桥接器不可达 {url}: {exc}", 2)
     print(json.dumps(body, ensure_ascii=False))
-    if status >= 400 or "error" in body:
+    if status >= 400:
         return 2
-    exit_code = body.get("exit_code", -1)
+    exit_code = body.get("exit_code")
     if exit_code in (None, -1):
-        return 2 if status >= 400 else 1
+        # 目标命令未完成（SSH 未连接、执行异常或超时），不是桥接器不可达。
+        return 1
     return 0 if exit_code == 0 else 1
 
 
@@ -128,11 +130,16 @@ def cmd_stream(args: argparse.Namespace) -> int:
     if not base:
         return fail("端口文件不存在：桥接器可能未被唤起。请到齐治堡垒机控制台点击 SSH 资源后再试。", 2)
     url = f"http://{base}/stream?command={urllib.parse.quote(args.command)}"
-    exit_code = 0
+    exit_code = None
+    stream_error = False
     try:
         with urllib.request.urlopen(url, timeout=args.timeout) as response:
             buffer = b""
-            for chunk in iter(lambda: response.read(4096), b""):
+            # HTTPResponse.read(n) waits for n bytes (or EOF), which would
+            # buffer small SSE events such as an interactive "Password:"
+            # prompt.  read1 returns as soon as any data is available.
+            read_chunk = getattr(response, "read1", None) or response.read
+            for chunk in iter(lambda: read_chunk(4096), b""):
                 buffer += chunk
                 while b"\n\n" in buffer:
                     raw_event, buffer = buffer.split(b"\n\n", 1)
@@ -157,14 +164,25 @@ def cmd_stream(args: argparse.Namespace) -> int:
                     elif event_type == "exit":
                         try:
                             payload = json.loads(data or "{}")
-                            exit_code = payload.get("exit_code", 0)
-                        except json.JSONDecodeError:
-                            exit_code = 0
+                            value = payload.get("exit_code")
+                            exit_code = int(value) if value is not None else None
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            exit_code = None
                     elif event_type == "error":
+                        stream_error = True
                         print(f"\n[stream error] {data}", file=sys.stderr)
-            return 0 if exit_code == 0 else 1
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         return fail(f"桥接器不可达 {url}: {exc}", 2)
+    except KeyboardInterrupt:
+        return 130
+
+    if stream_error:
+        print("[stream error] 服务端报告执行失败，未收到正常退出码", file=sys.stderr)
+        return 1
+    if exit_code is None:
+        print("[stream error] 未收到退出码，流式连接可能中断", file=sys.stderr)
+        return 1
+    return 0 if exit_code == 0 else 1
 
 
 def cmd_input(args: argparse.Namespace) -> int:

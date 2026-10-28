@@ -96,7 +96,7 @@ class ConsoleDisplayTests(unittest.TestCase):
         self.assertNotIn("\x1b", preview)
         self.assertIn("\\x1b[2Jhello\\x00", preview)
 
-    def test_console_formatter_colors_whole_blocks(self):
+    def test_console_formatter_colors_headlines_only(self):
         formatter = logger._ConsoleFormatter(use_colors=True)
 
         def render(message, level=logging.INFO):
@@ -104,20 +104,17 @@ class ConsoleDisplayTests(unittest.TestCase):
             setattr(record, logger._CONSOLE_ONLY_ATTR, True)
             return formatter.format(record)
 
-        # 指令块：标题与边框、正文统一青色
+        # 标题行按类型上色
         self.assertIn(logger._ConsoleFormatter._CYAN, render(">>> 收到服务器指令"))
-        self.assertIn(logger._ConsoleFormatter._CYAN, render("┌─ 指令正文"))
-        self.assertIn(logger._ConsoleFormatter._CYAN, render("rm -rf /data"))
-        self.assertIn(logger._ConsoleFormatter._CYAN, render("└─ 指令结束"))
-        # 返回块：绿色
         self.assertIn(logger._ConsoleFormatter._GREEN, render("<<< 服务器执行结果"))
-        self.assertIn(logger._ConsoleFormatter._GREEN, render("┌─ stdout（3 字符）"))
-        # 拒绝提示：红色
         self.assertIn(logger._ConsoleFormatter._RED, render("⛔ 未下发到目标服务器"))
-        self.assertIn(logger._ConsoleFormatter._RED, render("    已返回调用方：提示"))
-        # 横幅：品红，且重置块颜色
         self.assertIn(logger._ConsoleFormatter._MAGENTA, render("║ 横幅 ║"))
-        self.assertNotIn("\033[", render("┌─ 普通边框"))
+
+        # 边框与正文保持终端默认色：整块上色会让长输出更难读
+        self.assertNotIn("\033[", render("┌─ 指令正文"))
+        self.assertNotIn("\033[", render("rm -rf /data"))
+        self.assertNotIn("\033[", render("Linux web01 5.15.0"))
+        self.assertNotIn("\033[", render("└─ 返回结束"))
 
     def test_console_formatter_without_colors_returns_plain_text(self):
         formatter = logger._ConsoleFormatter(use_colors=False)
@@ -133,6 +130,33 @@ class ConsoleDisplayTests(unittest.TestCase):
         displayed = _render_calls(console)
         self.assertIn(f"v{__version__}", displayed)
         self.assertIn("版本", displayed)
+        self.assertIn("齐治 AccessClient", displayed)
+
+    @patch("main.get_log_path", return_value=Path("bridge.log"))
+    @patch("main.get_config_path", return_value=Path("config.json"))
+    @patch("main.log_blank_line")
+    @patch("main.log_console")
+    def test_runtime_config_shows_channel_and_paths(self, console, _blank, _cfg, _log):
+        from command_guard import CommandGuard
+
+        main._display_runtime_config(
+            {
+                "ssh_prefer_shell": True,
+                "keepalive_enabled": True,
+                "keepalive_interval_seconds": 180,
+                "keepalive_command": "ls",
+                "console_output_limit": 12000,
+                "console_verbose": False,
+            },
+            CommandGuard.from_config({}),
+        )
+
+        displayed = _render_calls(console)
+        self.assertIn("交互 Shell", displayed)
+        self.assertIn("运行环境", displayed)
+        self.assertIn("配置文件", displayed)
+        self.assertIn("文件日志", displayed)
+        self.assertIn("危险操作", displayed)
 
     def test_health_reports_version(self):
         api = api_server.BridgeAPI(FakeBridge())

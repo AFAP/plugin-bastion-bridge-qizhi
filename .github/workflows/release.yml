@@ -33,7 +33,14 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
-          Set-Content -Path version.py -Value "__version__ = `"$version`"" -Encoding utf8
+          $content = Get-Content -Path version.py -Raw
+          # 捕获引号前缀与行尾（可能是 CRLF），只替换版本号本身。
+          $pattern = '(?m)^(__version__[ \t]*=[ \t]*")[^"]*("[ \t]*\r?)$'
+          if (-not [regex]::IsMatch($content, $pattern)) {
+            throw "version.py 中未找到 __version__ 行"
+          }
+          $updated = [regex]::Replace($content, $pattern, "`${1}$version`${2}")
+          Set-Content -Path version.py -Value $updated -Encoding utf8 -NoNewline
           Write-Host "Stamped version.py with $version"
 
       - name: Run console and redaction tests

@@ -54,11 +54,11 @@
 - ✅ **单一 EXE、免安装**：PyInstaller 单文件打包，直接替换原 `putty.exe` 即可，无需管理员权限运行
 - ✅ **兼容齐治传参**：支持 PuTTY 显式参数、`-load` 临时会话文件（`\`、`=`、`:` 三种格式自动解析）
 - ✅ **兼容老旧服务器**：内置旧版 KEX/加密/MAC 算法（`group14-sha1`、`3des-cbc`、`hmac-sha1` 等）
-- ✅ **双通道执行**：优先 `exec_command`，自动降级交互 shell，适配只允许 PTY 的受限服务器
+- ✅ **默认交互 Shell 通道**：齐治接入客户端经本地端口转发时 `exec_command` 常只回登录横幅，默认直接走持久 PTY shell；`ssh_prefer_shell=false` 可切回 exec 通道
 - ✅ **完整 API**：`/health`、`/execute`、`/stream`(SSE)、`/input`、`/ws`(Socket.IO)
 - ✅ **端口自动发现**：实际监听地址写入 `active_port.txt`，AI 免配置直接读取
 - ✅ **空闲保活**：默认空闲 3 分钟自动发无害命令防止断连；有指令在执行中（含长任务等返回）时自动顺延，不打扰
-- ✅ **直观控制台**：彩色展示脱敏后的启动参数、连接状态、收到的指令、退出码与服务器返回
+- ✅ **直观控制台**：彩色标题 + 清晰分块，展示脱敏后的启动参数、版本、运行配置、连接状态、指令、退出码与服务器返回
 - ✅ **安全默认**：仅监听 `127.0.0.1`；命令与返回正文只在当前控制台预览，不写入日志文件
 - ✅ **DeepSeek Harness 技能插件**：仅在输入 `/bastion-qizhi` 时加载，不自动注入模型上下文
 
@@ -206,6 +206,7 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `api_port` | `8766` | 被占用时自动顺延 8767、8768… |
 | `ssh_connect_timeout` | `15` | SSH 握手超时（秒） |
 | `retry_max_attempts` | `3` | 连接失败重试次数 |
+| `ssh_prefer_shell` | `true` | 默认走持久交互 shell；设为 `false` 使用 exec 通道（要求服务器支持） |
 | `keepalive_enabled` | `true` | 空闲保活开关 |
 | `keepalive_interval_seconds` | `180` | 空闲多久触发保活（有指令在执行时顺延） |
 | `keepalive_command` | `ls` | 保活命令（须无害） |
@@ -215,6 +216,10 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `console_log` | `true` | 是否显示彩色控制台状态、指令与返回预览 |
 | `console_verbose` | `false` | 是否在控制台同时显示详细 INFO/DEBUG 技术日志 |
 | `console_output_limit` | `12000` | 单个指令或输出字段的控制台预览上限；不影响 API 返回的完整数据 |
+
+> 通道说明：默认 `ssh_prefer_shell=true` 时命令在 PTY 交互 shell 里执行，`stderr` 会合并进
+> `stdout`（JSON 里的 `stderr` 为空），退出码仍取自命令本身的 `$?`。需要区分两路输出时，
+> 把 `ssh_prefer_shell` 设为 `false`，但要求目标服务器真的支持 `exec_command`。
 
 ## 9. 日志与排错
 
@@ -238,6 +243,7 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 - 本项目替换 `putty.exe` 后**会接管堡垒机下发的口令**，请仅在**被授权环境**中部署。
 - API 无鉴权但仅监听 `127.0.0.1`，**本机任何进程均可调用**——请勿在多人共用终端上运行。
 - 口令、Token 与 API Key 参数会脱敏，命令与输出正文不写入日志文件。
+- 交互 shell 模式下，命令正文会短暂写入目标机 `mktemp` 生成的临时脚本（权限 `0600`），执行后立即删除；这是为了隔开命令 stdin 与桥接器包装行。
 - 控制台可能展示服务器业务输出；操作结束后请关闭窗口，不要截图或转发敏感内容。
 - 详见 [SECURITY.md](SECURITY.md)。
 

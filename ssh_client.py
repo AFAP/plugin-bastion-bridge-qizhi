@@ -17,8 +17,10 @@ Flask/FastAPI later.
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -156,22 +158,28 @@ class SSHBridge:
         keepalive_interval_seconds: int = 180,
         keepalive_command: str = "ls",
         command_guard: Optional[CommandGuard] = None,
+        prefer_shell: bool = True,
     ):
         self.params = params
         self._client: Optional[paramiko.SSHClient] = None
         self._transport: Optional[paramiko.Transport] = None
         self._shell: Optional[paramiko.Channel] = None
+        # Connection/channel lifecycle (short critical sections).
         self._lock = threading.RLock()
+        # Serializes execute/stream: both may share the persistent shell, so a
+        # second script must never be injected while the first is still running.
+        self._command_lock = threading.Lock()
+        # Serializes writes to a channel (command script vs. interactive input).
+        self._send_lock = threading.Lock()
         self._logger = get_logger(__name__)
 
         # 危险操作兜底：默认启用；这里是 api_server 之外的兜底，保活命令同样受约束。
         self._command_guard: CommandGuard = command_guard if command_guard is not None else CommandGuard.default()
 
-        # Set to True once the server proves it cannot honour exec_command
-        # (replies with the login banner only).  From then on commands go
-        # straight through the interactive shell channel, skipping the
-        # wasted exec attempt and its warning noise.
-        self._prefer_shell = False
+        # 默认走持久交互 shell 通道。齐治接入客户端经本地端口转发时常把
+        # exec_command 变成一段登录横幅，只有交互 shell 才能真正执行命令；
+        # 从 shell 起步可以避免「第一条命令先撞横幅、被回退逻辑重跑一遍」。
+        self._prefer_shell = bool(prefer_shell)
 
         # Keep-alive configuration: if no command is sent for the configured
         # interval, an innocuous command is executed to keep the bastion/tunnel
@@ -188,7 +196,7 @@ class SSHBridge:
 
         self._logger.info(
             "SSHBridge initialized: target=%s@%s:%s protocol=%s bastion=%s "
-            "keepalive=%s interval=%ss",
+            "keepalive=%s interval=%ss channel=%s",
             params.username,
             params.host,
             params.port,
@@ -196,6 +204,7 @@ class SSHBridge:
             params.bastion_host,
             self._keepalive_enabled,
             self._keepalive_interval_seconds,
+            "shell" if self._prefer_shell else "exec",
         )
 
     def connect(self, timeout: int = 15) -> bool:
@@ -279,16 +288,21 @@ class SSHBridge:
 
     def _open_shell(self) -> None:
         """Open a persistent interactive shell channel (used by send_input)."""
-        if not self._transport or not self._transport.is_active():
+        with self._lock:
+            transport = self._transport
+        if not transport or not transport.is_active():
             return
         try:
-            self._shell = self._transport.open_session()
-            self._shell.get_pty(term="xterm", width=160, height=48)
-            self._shell.invoke_shell()
+            channel = transport.open_session()
+            channel.get_pty(term="xterm", width=160, height=48)
+            channel.invoke_shell()
+            with self._lock:
+                self._shell = channel
             self._logger.info("Interactive shell channel opened")
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("Could not open interactive shell channel: %s", exc)
-            self._shell = None
+            with self._lock:
+                self._shell = None
 
     def _start_keepalive(self) -> None:
         """Start the background thread that sends keep-alive commands."""
@@ -384,95 +398,280 @@ class SSHBridge:
         return decision
 
     @staticmethod
-    def _drain_channel(channel: paramiko.Channel, max_wait: float = 2.0) -> None:
-        """Read and discard any data currently waiting on ``channel``."""
-        deadline = time.time() + max_wait
-        while time.time() < deadline:
-            if channel.recv_ready():
-                channel.recv(4096)
-            else:
-                time.sleep(0.05)
+    def _drain_channel(channel: paramiko.Channel, max_wait: float = 0.5) -> None:
+        """Read and discard stale data, returning once the channel goes quiet.
+
+        The previous version always waited the full ``max_wait``; with the
+        interactive shell as the default execution channel that added ~1.7 s
+        of latency to every command.  Stop after 100 ms of silence instead.
+        """
+        deadline = time.monotonic() + max(0.0, max_wait)
+        last_data = time.monotonic()
+        while time.monotonic() < deadline:
+            try:
+                if channel.recv_ready():
+                    channel.recv(4096)
+                    last_data = time.monotonic()
+                    continue
+            except Exception:  # noqa: BLE001 - channel closed mid-drain
+                return
+            if time.monotonic() - last_data >= 0.1:
+                return
+            time.sleep(0.02)
+
+    def _ensure_shell_channel(self) -> tuple[Optional[paramiko.Channel], bool]:
+        """Return a shell channel and whether it is temporary (caller must close)."""
+        with self._lock:
+            if self._shell is not None and not self._shell.closed:
+                return self._shell, False
+            client = self._client
+        if client is None:
+            raise RuntimeError("No SSH client")
+        transport = client.get_transport()
+        if transport is None:
+            raise RuntimeError("No active transport")
+        channel = transport.open_session()
+        channel.get_pty(term="xterm", width=160, height=48)
+        channel.invoke_shell()
+        self._logger.debug("Opened temporary shell channel for command")
+        return channel, True
+
+    def _prepare_shell_channel(self, channel: paramiko.Channel) -> None:
+        """Discard stale output and turn off input echo before sending a command."""
+        # A fresh PTY may print the bastion login banner; allow up to a second
+        # while still returning as soon as the channel goes quiet.
+        self._drain_channel(channel, max_wait=1.0)
+        self._send_all(channel, b"stty -echo\n", timeout=10.0, lock=False)
+        time.sleep(0.05)
+        self._drain_channel(channel, max_wait=0.2)
+
+    def _send_all(
+        self,
+        channel: paramiko.Channel,
+        data: bytes,
+        timeout: float = 30.0,
+        lock: bool = True,
+    ) -> None:
+        """Send all bytes with a write timeout.
+
+        ``Channel.send`` is allowed to send only part of the buffer (and the
+        old code ignored its return value), so a long command could be
+        silently truncated.  ``sendall`` loops until everything is written or
+        raises ``socket.timeout``.
+        """
+        if lock:
+            with self._send_lock:
+                self._send_all(channel, data, timeout=timeout, lock=False)
+            return
+        previous = channel.gettimeout()
+        channel.settimeout(timeout)
+        try:
+            channel.sendall(data)
+        finally:
+            channel.settimeout(previous)
+
+    @staticmethod
+    def _shell_script(
+        command: str,
+        end_marker: str,
+        exit_marker: str,
+        rc_var: str,
+        tmp_var: str,
+        eof_marker: str,
+        tmp_name: str,
+    ) -> str:
+        """Run the command from a temp file, then print sentinel-prefixed markers.
+
+        Why a temp file and a one-line epilogue?  If the command is sent as
+        ``read answer`` followed by ``rc=$?`` on the next line, the terminal
+        input queue already contains the wrapper, so ``read`` consumes
+        ``rc=$?`` instead of waiting for the user.  Writing the command to a
+        file and sourcing it from a *single* epilogue line means the shell has
+        already consumed that whole line before ``read`` runs; only real user
+        input is left in the terminal queue.
+
+        The markers are prefixed with ``\\x01`` (SOH).  The echoed script only
+        contains the literal text ``\\001``, never the control byte, so marker
+        detection works even when ``stty -echo`` is unavailable, and no line
+        anchoring is needed (a prompt without a newline can be delivered
+        immediately).
+        """
+        return (
+            f'{tmp_var}=$(mktemp 2>/dev/null) || '
+            f'{tmp_var}="${{TMPDIR:-${{HOME:-/tmp}}}}/{tmp_name}"\n'
+            f'(umask 077; cat > "${tmp_var}") <<\'{eof_marker}\'\n'
+            f"{command}\n"
+            f"{eof_marker}\n"
+            f'. "${tmp_var}"; {rc_var}=$?; rm -f "${tmp_var}"; '
+            f"printf '\\001{end_marker}\\n'; "
+            f"printf '\\001{exit_marker}:%s\\n' \"${rc_var}\"; "
+            f"unset {rc_var}\n"
+        )
+
+    @staticmethod
+    def _marker_patterns(end_marker: str, exit_marker: str) -> tuple[re.Pattern, re.Pattern]:
+        """Compile patterns for the sentinel-prefixed marker lines.
+
+        ``\\x01`` is emitted by ``printf`` at runtime; an echoed script only
+        shows the literal ``\\001`` characters, so the echo can never match.
+        The trailing newline is required, so a marker split across SSH packets
+        (or ``:1`` before ``:123``) is not parsed early.
+        """
+        sentinel = b"\x01"
+        end_pattern = re.compile(
+            re.escape(sentinel + end_marker.encode()) + rb"\r?\n"
+        )
+        exit_pattern = re.compile(
+            re.escape(sentinel + exit_marker.encode()) + rb":(-?\d+)\r?\n"
+        )
+        return end_pattern, exit_pattern
+
+    @staticmethod
+    def _marker_prefix_len(buffer: bytes, markers: tuple[bytes, ...]) -> int:
+        """Length of a suffix that could be the start of a marker (keep it)."""
+        longest = 0
+        for marker in markers:
+            limit = min(len(marker) - 1, len(buffer))
+            for size in range(limit, 0, -1):
+                if buffer.endswith(marker[:size]):
+                    longest = max(longest, size)
+                    break
+        return longest
+
+    def _reset_shell_channel(self) -> None:
+        """Recreate the persistent shell after a timeout left a command running."""
+        with self._lock:
+            shell = self._shell
+            self._shell = None
+        if shell is not None:
+            try:
+                shell.close()
+            except Exception as exc:  # noqa: BLE001
+                self._logger.debug("Error closing stale shell channel: %s", exc)
+        try:
+            self._open_shell()
+            self._logger.info("交互 shell 已重建")
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("Could not reopen interactive shell: %s", exc)
 
     def _execute_via_shell(self, command: str, timeout: int = 30) -> Dict[str, Any]:
         """Execute a command through an interactive shell channel.
 
-        Some bastion gateways or restricted shells do not honour
-        ``exec_command`` and only allow interactive sessions.  In those cases
-        we use the persistent PTY shell (opened at connect time) to run the
-        command.  This avoids opening a second concurrent channel, which some
-        servers reject with ``channelOpen too offen``.
-
-        If the persistent shell is not available, we fall back to opening a
-        fresh channel as a last resort.
+        The Qizhi access client often does not honour ``exec_command`` over its
+        local port forward (it returns a login banner instead), so this is the
+        default channel.  The command is written to a temp file and sourced
+        from a single epilogue line, so ``read``/``sudo`` see only real user
+        input; sentinel-prefixed markers delimit output and carry the real
+        ``$?`` exit status.
         """
         channel: Optional[paramiko.Channel] = None
         close_when_done = False
+        persistent = False
         try:
-            # Prefer the persistent shell channel opened during connect().
-            if self._shell and not self._shell.closed:
-                channel = self._shell
-                self._logger.debug("Using persistent shell channel for command")
-            else:
-                transport = self._client.get_transport()
-                if transport is None:
-                    raise RuntimeError("No active transport")
-                channel = transport.open_session()
-                channel.get_pty(term="xterm", width=160, height=48)
-                channel.invoke_shell()
-                close_when_done = True
-                self._logger.debug("Opened temporary shell channel for command")
-
-            # Drain any stale output before running the command.
-            self._drain_channel(channel, max_wait=1.0)
-
-            # Disable command echo so the command does not appear in output.
-            channel.send("stty -echo\n")
-            time.sleep(0.2)
-            self._drain_channel(channel, max_wait=0.5)
+            channel, close_when_done = self._ensure_shell_channel()
+            persistent = not close_when_done
 
             # Unique markers so command output cannot accidentally match them.
             uid = uuid.uuid4().hex[:12]
             end_marker = f"---BRIDGE_END_{uid}---"
             exit_marker = f"---BRIDGE_EXIT_{uid}---"
+            rc_var = f"__BRIDGE_RC_{uid}"
+            tmp_var = f"__BRIDGE_TMP_{uid}"
+            eof_marker = f"BRIDGE_EOF_{uid}"
+            script = self._shell_script(
+                command,
+                end_marker,
+                exit_marker,
+                rc_var,
+                tmp_var,
+                eof_marker,
+                f"bridge_{uid}.sh",
+            )
 
-            channel.send(f"{command}\necho {end_marker}\necho {exit_marker}:$?\n")
+            # Hold the write lock across "prepare + script" so an /input write
+            # cannot slip in between stty and the command.
+            with self._send_lock:
+                self._prepare_shell_channel(channel)
+                self._send_all(channel, script.encode("utf-8"), timeout=30.0, lock=False)
 
+            end_pattern, exit_pattern = self._marker_patterns(end_marker, exit_marker)
             output = b""
-            found_end = False
-            found_exit = False
-            exit_code = -1
-            deadline = time.time() + timeout
+            end_match = None
+            exit_match = None
+            timed_out = False
+            channel_closed = False
+            deadline = time.monotonic() + max(1.0, float(timeout))
 
-            while time.time() < deadline and not (found_end and found_exit):
-                if channel.recv_ready():
-                    chunk = channel.recv(4096)
-                    output += chunk
-                    text = output.decode("utf-8", errors="replace")
-                    if end_marker in text:
-                        found_end = True
-                    if exit_marker in text:
-                        found_exit = True
-                else:
-                    time.sleep(0.1)
-
-            text = output.decode("utf-8", errors="replace")
-            end_idx = text.find(end_marker)
-            exit_idx = text.find(exit_marker)
-
-            stdout = text[:end_idx] if end_idx != -1 else text
-            if exit_idx != -1:
-                exit_line = text[exit_idx:].splitlines()[0]
+            while not (end_match and exit_match):
+                progressed = False
                 try:
-                    exit_code = int(exit_line.split(":", 1)[1].strip())
-                except (ValueError, IndexError):
-                    pass
+                    while channel.recv_ready():
+                        chunk = channel.recv(4096)
+                        if not chunk:
+                            break
+                        output += chunk
+                        progressed = True
+                        if time.monotonic() >= deadline:
+                            # A command that keeps writing must not starve the
+                            # deadline check in the outer loop.
+                            timed_out = True
+                            break
+                except Exception as exc:  # noqa: BLE001 - treat as channel closure
+                    self._logger.debug("Shell read failed: %s", exc)
+                    channel_closed = True
+                    break
+
+                if timed_out:
+                    # The deadline may have fired on the same read that carried
+                    # the final markers; accept a complete result if we have one.
+                    end_match = end_pattern.search(output)
+                    exit_match = exit_pattern.search(output)
+                    if end_match and exit_match:
+                        timed_out = False
+                    else:
+                        break
+                end_match = end_pattern.search(output)
+                exit_match = exit_pattern.search(output)
+                if end_match and exit_match:
+                    break
+                if channel.closed:
+                    channel_closed = True
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                if not progressed:
+                    time.sleep(0.02)
+
+            stdout = (
+                output[:end_match.start()].decode("utf-8", errors="replace")
+                if end_match
+                else output.decode("utf-8", errors="replace")
+            )
+            exit_code = int(exit_match.group(1)) if exit_match else -1
+
+            result: Dict[str, Any] = {
+                "stdout": stdout.strip("\r\n"),
+                "stderr": "",
+                "exit_code": exit_code,
+            }
+            if timed_out:
+                result["exit_code"] = -1
+                result["error"] = f"命令执行超时（>{timeout} 秒）"
+                self._logger.warning("指令执行超时（shell 通道），将重建交互 shell")
+                if persistent:
+                    self._reset_shell_channel()
+            elif channel_closed and not (end_match and exit_match):
+                result["exit_code"] = -1
+                result["error"] = "交互 shell 通道已关闭，命令可能仍在远端运行"
+                self._logger.warning(result["error"])
 
             self._logger.info(
                 "指令执行完毕（shell 通道），退出码=%s（stdout %d 字符）",
-                exit_code,
-                len(stdout),
+                result["exit_code"],
+                len(result["stdout"]),
             )
-            return {"stdout": stdout.strip("\r\n"), "stderr": "", "exit_code": exit_code}
+            return result
 
         except Exception as exc:  # noqa: BLE001
             self._logger.error("Interactive shell execution failed: %s", exc, exc_info=True)
@@ -485,14 +684,15 @@ class SSHBridge:
                     pass
 
     def _looks_like_login_only(self, output: str) -> bool:
-        """Heuristic: detect when exec_command only returned login banner.
+        """Heuristic: detect when exec_command only returned a login banner.
 
-        We require the output to be relatively short and contain classic
-        login-banner text.  This avoids false positives when a legitimate
-        command happens to contain words like "connection" in its output.
+        Empty output is deliberately *not* treated as a banner: plenty of
+        successful commands (``systemctl restart``, ``mkdir``, ``touch``)
+        print nothing.  The old behaviour re-ran those commands through the
+        shell, duplicating their side effects.
         """
         if not output:
-            return True
+            return False
         if len(output) > 400:
             return False
         lowered = output.lower()
@@ -515,74 +715,329 @@ class SSHBridge:
 
         A refused command is never sent: the result is a normal shape with
         ``exit_code`` 126 and the prompt in ``stderr``.
+
+        The default channel is the interactive shell (see ``prefer_shell``);
+        the exec channel is kept for environments where it works.
         """
-        with self._lock:
-            decision = self._guard_decision(command)
-            if decision is not None:
-                return build_blocked_result(decision)
+        decision = self._guard_decision(command)
+        if decision is not None:
+            return build_blocked_result(decision)
 
-            if not self.is_connected():
-                self._logger.error("execute() called while not connected")
-                return {"stdout": "", "stderr": "SSH not connected", "exit_code": -1, "error": "SSH not connected"}
+        if not self.is_connected():
+            self._logger.error("execute() called while not connected")
+            return {"stdout": "", "stderr": "SSH not connected", "exit_code": -1, "error": "SSH not connected"}
 
+        # Serialize commands (not input): send_input() must still be able to
+        # reach an interactive command while this lock is held.
+        with self._command_lock:
             self._mark_busy()
             try:
                 self._bump_activity()
-                self._logger.info("Executing command (length=%d)", len(command))
+                self._logger.info(
+                    "Executing command (length=%d, channel=%s)",
+                    len(command),
+                    "shell" if self._prefer_shell else "exec",
+                )
 
-                # Once the server has proven it cannot honour exec_command,
-                # skip the wasted exec attempt and use the shell channel directly.
                 if self._prefer_shell:
                     return self._execute_via_shell(command, timeout=timeout)
-
-                stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
-                # Ensure stdin is closed so the remote command sees EOF.
-                try:
-                    stdin.channel.shutdown_write()
-                except Exception:  # noqa: BLE001
-                    pass
-
-                exit_code = stdout.channel.recv_exit_status()
-                out = stdout.read().decode("utf-8", errors="replace")
-                err = stderr.read().decode("utf-8", errors="replace")
-
-                self._logger.info(
-                    "指令执行完毕，退出码=%s（stdout %d 字符，stderr %d 字符）",
-                    exit_code,
-                    len(out),
-                    len(err),
-                )
-                original_result = {"stdout": out, "stderr": err, "exit_code": exit_code}
-
-                # Some bastion shells reject exec_command and only echo login banner.
-                # Fall back to an interactive shell session in that case, but if the
-                # fallback fails (e.g. server limits concurrent channels) return the
-                # original exec_command result instead of losing it.
-                if exit_code == 0 and not err and self._looks_like_login_only(out):
-                    self._logger.warning(
-                        "exec 通道被服务器关闭（仅返回登录横幅），改用交互 shell 通道执行"
-                    )
-                    fallback = self._execute_via_shell(command, timeout=timeout)
-                    if fallback.get("exit_code", -1) == -1 and "error" in fallback:
-                        self._logger.warning(
-                            "Interactive shell fallback failed; returning original exec_command result"
-                        )
-                        return original_result
-                    if not self._prefer_shell:
-                        self._prefer_shell = True
-                        self._logger.info(
-                            "已确认该服务器不支持 exec 通道，后续指令将直接使用交互 shell 通道"
-                        )
-                    return fallback
-
-                return original_result
-
-            except Exception as exc:  # noqa: BLE001
-                self._logger.error("Command execution failed: %s", exc, exc_info=True)
-                self._logger.warning("Retrying command via interactive shell")
-                return self._execute_via_shell(command, timeout=timeout)
+                return self._execute_via_exec(command, timeout=timeout)
             finally:
                 self._mark_idle()
+
+    def _execute_via_exec(self, command: str, timeout: int = 30) -> Dict[str, Any]:
+        """Execute through a dedicated exec channel (non-PTY, stderr separate)."""
+        try:
+            stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+            # Ensure stdin is closed so the remote command sees EOF.
+            try:
+                stdin.channel.shutdown_write()
+            except Exception:  # noqa: BLE001
+                pass
+
+            channel = stdout.channel
+            try:
+                out, err, exit_code, error = self._read_exec_output(channel, timeout)
+            finally:
+                try:
+                    channel.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            result: Dict[str, Any] = {"stdout": out, "stderr": err, "exit_code": exit_code}
+
+            if error:
+                result["error"] = error
+                self._logger.warning("exec 通道执行未完成：%s", error)
+                return result
+
+            self._logger.info(
+                "指令执行完毕，退出码=%s（stdout %d 字符，stderr %d 字符）",
+                exit_code,
+                len(out),
+                len(err),
+            )
+
+            # Some bastions reject exec_command and only echo a login banner.
+            # Do NOT retry the command through the shell here: the exec attempt
+            # may already have run it, and a retry would duplicate side effects.
+            # Tell the caller to switch channels instead.
+            if exit_code == 0 and not err and self._looks_like_login_only(out):
+                self._logger.warning(
+                    "exec 通道仅返回登录横幅；请将 ssh_prefer_shell 设为 true 使用交互 shell"
+                )
+                return {
+                    "stdout": out,
+                    "stderr": "",
+                    "exit_code": -1,
+                    "error": "exec 通道仅返回登录横幅，命令可能未执行；请使用交互 shell 通道（ssh_prefer_shell=true）",
+                }
+
+            return result
+
+        except Exception as exc:  # noqa: BLE001
+            # Do not silently retry through the shell: the command may already
+            # have produced side effects, and a retry would run it twice.
+            self._logger.error("Command execution failed: %s", exc, exc_info=True)
+            return {"stdout": "", "stderr": str(exc), "exit_code": -1, "error": str(exc)}
+
+    @staticmethod
+    def _read_exec_output(
+        channel: paramiko.Channel, timeout: int
+    ) -> tuple[str, str, int, Optional[str]]:
+        """Read stdout/stderr until the channel exits, honouring a hard deadline.
+
+        ``recv_exit_status`` must never be called before the output is drained:
+        a command writing more than the SSH window can hold would block the
+        remote side forever.  We therefore poll both streams, then call
+        ``recv_exit_status`` only once ``exit_status_ready`` is true.
+        """
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        out = bytearray()
+        err = bytearray()
+
+        def drain() -> bool:
+            """Drain available data; return False when the deadline is exceeded."""
+            while channel.recv_ready():
+                chunk = channel.recv(65536)
+                if not chunk:
+                    break
+                out.extend(chunk)
+                if time.monotonic() >= deadline:
+                    return False
+            while channel.recv_stderr_ready():
+                chunk = channel.recv_stderr(65536)
+                if not chunk:
+                    break
+                err.extend(chunk)
+                if time.monotonic() >= deadline:
+                    return False
+            return True
+
+        def drain_all() -> None:
+            """Drain everything after exit; the command ended, data is finite."""
+            while channel.recv_ready():
+                chunk = channel.recv(65536)
+                if not chunk:
+                    break
+                out.extend(chunk)
+            while channel.recv_stderr_ready():
+                chunk = channel.recv_stderr(65536)
+                if not chunk:
+                    break
+                err.extend(chunk)
+
+        while True:
+            try:
+                if not drain():
+                    if channel.exit_status_ready():
+                        # Command finished right at the deadline; collect ALL
+                        # remaining output (no deadline) instead of silently
+                        # returning a truncated stdout with exit_code 0.
+                        try:
+                            drain_all()
+                        except Exception as exc:  # noqa: BLE001
+                            return (
+                                out.decode("utf-8", errors="replace"),
+                                err.decode("utf-8", errors="replace"),
+                                -1,
+                                f"命令已结束但输出读取失败：{exc}",
+                            )
+                        return (
+                            out.decode("utf-8", errors="replace"),
+                            err.decode("utf-8", errors="replace"),
+                            channel.recv_exit_status(),
+                            None,
+                        )
+                    try:
+                        channel.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        out.decode("utf-8", errors="replace"),
+                        err.decode("utf-8", errors="replace"),
+                        -1,
+                        f"命令执行超时（>{timeout} 秒）",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    out.decode("utf-8", errors="replace"),
+                    err.decode("utf-8", errors="replace"),
+                    -1,
+                    f"读取指令输出失败：{exc}",
+                )
+
+            if channel.exit_status_ready():
+                try:
+                    drain_all()
+                except Exception as exc:  # noqa: BLE001
+                    return (
+                        out.decode("utf-8", errors="replace"),
+                        err.decode("utf-8", errors="replace"),
+                        -1,
+                        f"命令已结束但输出读取失败：{exc}",
+                    )
+                return (
+                    out.decode("utf-8", errors="replace"),
+                    err.decode("utf-8", errors="replace"),
+                    channel.recv_exit_status(),
+                    None,
+                )
+
+            if time.monotonic() >= deadline:
+                try:
+                    channel.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                return (
+                    out.decode("utf-8", errors="replace"),
+                    err.decode("utf-8", errors="replace"),
+                    -1,
+                    f"命令执行超时（>{timeout} 秒）",
+                )
+
+            time.sleep(0.02)
+
+    def _stream_via_shell(self, command: str) -> Generator[Dict[str, Any], None, None]:
+        """Stream a command through the persistent PTY shell.
+
+        A PTY merges stderr into stdout, so every data chunk is reported as
+        ``stdout``.  Output is delivered as it arrives (only a possible marker
+        prefix is held back), including prompts without a trailing newline; a
+        bounded read batch keeps the yield points reachable while a command
+        writes continuously.
+        """
+        channel: Optional[paramiko.Channel] = None
+        close_when_done = False
+        completed = False
+        exit_sent = False
+        try:
+            channel, close_when_done = self._ensure_shell_channel()
+
+            uid = uuid.uuid4().hex[:12]
+            end_marker = f"---BRIDGE_STREAM_END_{uid}---"
+            exit_marker = f"---BRIDGE_STREAM_EXIT_{uid}---"
+            rc_var = f"__BRIDGE_RC_{uid}"
+            tmp_var = f"__BRIDGE_TMP_{uid}"
+            eof_marker = f"BRIDGE_EOF_{uid}"
+            script = self._shell_script(
+                command,
+                end_marker,
+                exit_marker,
+                rc_var,
+                tmp_var,
+                eof_marker,
+                f"bridge_{uid}.sh",
+            )
+            with self._send_lock:
+                self._prepare_shell_channel(channel)
+                self._send_all(channel, script.encode("utf-8"), timeout=30.0, lock=False)
+
+            end_pattern, exit_pattern = self._marker_patterns(end_marker, exit_marker)
+            end_token = b"\x01" + end_marker.encode()
+            buffer = b""
+            found_end = False
+            exit_code = -1
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+            while True:
+                progressed = False
+                # Read a bounded batch per iteration so a continuously-writing
+                # command still reaches the yield points below.
+                for _ in range(32):
+                    if not channel.recv_ready():
+                        break
+                    chunk = channel.recv(4096)
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    progressed = True
+
+                if not found_end:
+                    match = end_pattern.search(buffer)
+                    if match:
+                        if match.start():
+                            text = decoder.decode(buffer[:match.start()])
+                            if text:
+                                yield {"type": "stdout", "data": text}
+                        buffer = buffer[match.end():]
+                        found_end = True
+                    else:
+                        # Deliver everything that cannot be the beginning of a
+                        # marker; prompts such as "Password:" are emitted now.
+                        keep = self._marker_prefix_len(buffer, (end_token + b"\r\n",))
+                        cut = len(buffer) - keep
+                        if cut > 0:
+                            text = decoder.decode(buffer[:cut])
+                            buffer = buffer[cut:]
+                            if text:
+                                yield {"type": "stdout", "data": text}
+                else:
+                    match = exit_pattern.search(buffer)
+                    if match:
+                        exit_code = int(match.group(1))
+                        completed = True
+                        break
+                    # Keep the whole pending exit line: it may already contain
+                    # the exit marker plus a partial number (":1" of ":123").
+                    # Everything here is at most the marker plus prompt noise.
+                    if len(buffer) > 8192:
+                        buffer = buffer[-8192:]
+
+                if channel.closed and not progressed:
+                    break
+                if not progressed:
+                    time.sleep(0.01)
+
+            if not found_end and buffer:
+                tail_text = decoder.decode(buffer, final=True)
+            else:
+                tail_text = decoder.decode(b"", final=True)
+            if tail_text:
+                yield {"type": "stdout", "data": tail_text}
+
+            yield {"type": "exit", "exit_code": exit_code}
+            exit_sent = True
+            self._logger.info("流式指令执行完毕（shell 通道），退出码=%s", exit_code)
+
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error("Shell stream failed: %s", exc, exc_info=True)
+            yield {"type": "stderr", "data": f"Stream error: {exc}"}
+            if not exit_sent:
+                yield {"type": "exit", "exit_code": -1}
+                exit_sent = True
+        finally:
+            if close_when_done and channel is not None:
+                try:
+                    channel.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            elif not completed and channel is not None:
+                # Consumer stopped early (client disconnect): interrupt the
+                # command so the shared shell is usable for the next request.
+                try:
+                    self._send_all(channel, b"\x03", timeout=2.0)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def stream_execute(self, command: str) -> Generator[Dict[str, Any], None, None]:
         """
@@ -598,6 +1053,8 @@ class SSHBridge:
 
         A refused command yields the prompt as a ``stderr`` chunk plus
         ``{"type": "exit", "exit_code": 126}`` and is never sent to the server.
+        An exit chunk is emitted on every path, including "SSH not connected"
+        and execution errors, so clients never mistake silence for success.
         """
         decision = self._guard_decision(command)
         if decision is not None:
@@ -608,57 +1065,76 @@ class SSHBridge:
         if not self.is_connected():
             self._logger.error("stream_execute() called while not connected")
             yield {"type": "stderr", "data": "SSH not connected"}
+            yield {"type": "exit", "exit_code": -1}
             return
 
         channel: Optional[paramiko.Channel] = None
-        self._mark_busy()
-        try:
-            self._bump_activity()
-            self._logger.info("Streaming command (length=%d)", len(command))
-            transport = self._client.get_transport()
-            if transport is None:
-                raise RuntimeError("No active transport")
-
-            channel = transport.open_session()
-            # No PTY here so stdout/stderr remain separate, matching the contract.
-            channel.exec_command(command)
-            # Close stdin so the remote command sees EOF and can finish cleanly.
+        # Serialize with execute()/other streams: the persistent shell can only
+        # run one command at a time, and a second script would clobber the first.
+        with self._command_lock:
+            self._mark_busy()
             try:
-                channel.shutdown_write()
-            except Exception:  # noqa: BLE001
-                pass
+                self._bump_activity()
+                self._logger.info(
+                    "Streaming command (length=%d, channel=%s)",
+                    len(command),
+                    "shell" if self._prefer_shell else "exec",
+                )
 
-            while True:
-                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
-                    break
+                if self._prefer_shell:
+                    yield from self._stream_via_shell(command)
+                    return
 
-                if channel.recv_ready():
-                    data = channel.recv(4096).decode("utf-8", errors="replace")
-                    if data:
-                        yield {"type": "stdout", "data": data}
+                transport = self._client.get_transport()
+                if transport is None:
+                    raise RuntimeError("No active transport")
 
-                if channel.recv_stderr_ready():
-                    data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
-                    if data:
-                        yield {"type": "stderr", "data": data}
-
-                # Small sleep to avoid spinning the CPU while waiting for output.
-                time.sleep(0.01)
-
-            exit_code = channel.recv_exit_status()
-            yield {"type": "exit", "exit_code": exit_code}
-            self._logger.info("流式指令执行完毕，退出码=%s", exit_code)
-
-        except Exception as exc:  # noqa: BLE001
-            self._logger.error("Stream execution failed: %s", exc, exc_info=True)
-            yield {"type": "stderr", "data": f"Stream error: {exc}"}
-        finally:
-            self._mark_idle()
-            if channel is not None:
+                channel = transport.open_session()
+                # No PTY here so stdout/stderr remain separate, matching the contract.
+                channel.exec_command(command)
+                # Close stdin so the remote command sees EOF and can finish cleanly.
                 try:
-                    channel.close()
+                    channel.shutdown_write()
                 except Exception:  # noqa: BLE001
                     pass
+
+                decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                while True:
+                    if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                        break
+
+                    if channel.recv_ready():
+                        data = decoder.decode(channel.recv(4096))
+                        if data:
+                            yield {"type": "stdout", "data": data}
+
+                    if channel.recv_stderr_ready():
+                        data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
+                        if data:
+                            yield {"type": "stderr", "data": data}
+
+                    # Small sleep to avoid spinning the CPU while waiting for output.
+                    time.sleep(0.01)
+
+                remaining = decoder.decode(b"", final=True)
+                if remaining:
+                    yield {"type": "stdout", "data": remaining}
+
+                exit_code = channel.recv_exit_status()
+                yield {"type": "exit", "exit_code": exit_code}
+                self._logger.info("流式指令执行完毕，退出码=%s", exit_code)
+
+            except Exception as exc:  # noqa: BLE001
+                self._logger.error("Stream execution failed: %s", exc, exc_info=True)
+                yield {"type": "stderr", "data": f"Stream error: {exc}"}
+                yield {"type": "exit", "exit_code": -1}
+            finally:
+                self._mark_idle()
+                if channel is not None:
+                    try:
+                        channel.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
     def send_input(self, data: str) -> bool:
         """
@@ -667,35 +1143,38 @@ class SSHBridge:
         This is used by api_server POST /input to drive an interactive session.
         Returns True if the data was sent, False otherwise.  Data that would run
         a dangerous command is refused (returns False) and never sent.
-        """
-        with self._lock:
-            if self._command_guard.check_input(data) is not None:
-                self._logger.warning(
-                    "交互输入命中危险操作，已拒绝发送 | 长度=%d",
-                    len(data),
-                )
-                return False
 
-            if not self._shell or self._shell.closed:
-                self._logger.warning("send_input() called but no interactive shell is open")
-                return False
-            try:
-                self._bump_activity()
-                payload = data.encode("utf-8", errors="replace")
-                self._shell.send(payload)
-                self._logger.debug("Sent %d bytes to interactive shell", len(payload))
-                return True
-            except Exception as exc:  # noqa: BLE001
-                self._logger.error("Failed to send input to shell: %s", exc)
-                return False
+        Deliberately does **not** take ``_command_lock``: an interactive command
+        holds that lock for its whole lifetime, and waiting for it would make
+        /input useless exactly when it is needed.
+        """
+        if self._command_guard.check_input(data) is not None:
+            self._logger.warning(
+                "交互输入命中危险操作，已拒绝发送 | 长度=%d",
+                len(data),
+            )
+            return False
+
+        with self._lock:
+            shell = self._shell
+        if shell is None or shell.closed:
+            self._logger.warning("send_input() called but no interactive shell is open")
+            return False
+        try:
+            self._bump_activity()
+            payload = data.encode("utf-8", errors="replace")
+            self._send_all(shell, payload, timeout=5.0)
+            self._logger.debug("Sent %d bytes to interactive shell", len(payload))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error("Failed to send input to shell: %s", exc)
+            return False
 
     def is_connected(self) -> bool:
         """Return True if the underlying transport is active."""
-        return (
-            self._client is not None
-            and self._transport is not None
-            and self._transport.is_active()
-        )
+        client = self._client
+        transport = self._transport
+        return client is not None and transport is not None and transport.is_active()
 
     def close(self) -> None:
         """Close all channels and the SSH client."""

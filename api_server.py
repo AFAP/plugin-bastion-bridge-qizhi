@@ -128,6 +128,9 @@ class BridgeAPI:
         log_console("%s", stdout_preview)
         log_console("├─ stderr（%d 字符）", len(str(stderr)))
         log_console("%s", stderr_preview)
+        error = result.get("error")
+        if error:
+            log_console("! 执行未完成：%s", error, level=30)
         if stdout_truncated or stderr_truncated:
             log_console(
                 "! 输出较长，仅展示前 %d 字符；API 返回值保持完整",

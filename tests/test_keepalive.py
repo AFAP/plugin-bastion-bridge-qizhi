@@ -8,11 +8,12 @@ import ssh_client
 from connection import ConnectionParams
 
 
-def _make_bridge(interval=180):
+def _make_bridge(interval=180, prefer_shell=True):
     bridge = ssh_client.SSHBridge(
         ConnectionParams(host="127.0.0.1", port=22, username="tester"),
         keepalive_enabled=True,
         keepalive_interval_seconds=interval,
+        prefer_shell=prefer_shell,
     )
     bridge._client = object()  # is_connected 只看非空
     bridge._transport = _FakeTransport(active=True)
@@ -39,7 +40,7 @@ class _Std:
 
 
 class _BlockingExecChannel:
-    """recv_exit_status 会一直阻塞，直到测试放行——模拟长任务在飞。"""
+    """exec 通道一直不结束，直到测试放行——模拟长任务在飞。"""
 
     def __init__(self, started, release):
         self.started = started
@@ -48,9 +49,16 @@ class _BlockingExecChannel:
     def shutdown_write(self):
         pass
 
+    def recv_ready(self):
+        return False
+
+    def recv_stderr_ready(self):
+        return False
+
+    def exit_status_ready(self):
+        return self.release.is_set()
+
     def recv_exit_status(self):
-        self.started.set()
-        self.release.wait(timeout=5)
         return 0
 
 
@@ -59,6 +67,7 @@ class _BlockingExecClient:
         self._channel = _BlockingExecChannel(started, release)
 
     def exec_command(self, command, timeout=None):
+        self._channel.started.set()
         return _Std(self._channel), _Std(self._channel, b"out"), _Std(self._channel, b"")
 
     def get_transport(self):
@@ -146,7 +155,7 @@ class BusyTrackingTests(unittest.TestCase):
 
     def test_execute_marks_busy_while_waiting_for_exit_code(self):
         started, release = threading.Event(), threading.Event()
-        bridge = _make_bridge()
+        bridge = _make_bridge(prefer_shell=False)
         bridge._client = _BlockingExecClient(started, release)
 
         outcome = {}
@@ -168,7 +177,7 @@ class BusyTrackingTests(unittest.TestCase):
     def test_stream_execute_marks_busy_while_streaming(self):
         started, release = threading.Event(), threading.Event()
         channel = _SlowStreamChannel(started, release)
-        bridge = _make_bridge()
+        bridge = _make_bridge(prefer_shell=False)
         bridge._transport = _SlowStreamTransport(channel)
         bridge._client = _SlowStreamClient(bridge._transport)
 
